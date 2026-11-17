@@ -7,6 +7,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import re
 import time
 from typing import Any, Optional
 import xml.etree.ElementTree as ET
@@ -15,6 +16,8 @@ import httpx
 
 from grogu.config import DEVICE_IP, STATE_DIR, WDA_FORWARD_PORT
 from grogu.core import GroguCoreManager
+
+_FRAME_RE = re.compile(r"\{\{(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)\},\s*\{(\d+(?:\.\d+)?),\s*(\d+(?:\.\d+)?)\}\}")
 
 _INTERACTIVE_TYPES = {
     "Button",
@@ -56,6 +59,7 @@ class FastWDAClient:
         self._active_base_url: Optional[str] = None
         self._session_id: Optional[str] = None
         self._window_size: Optional[dict[str, int]] = None
+        self._has_custom_fast_tree: Optional[bool] = None
         self._client = httpx.AsyncClient(timeout=8.0)
 
     async def aclose(self) -> None:
@@ -152,7 +156,7 @@ class FastWDAClient:
                         "waitForIdleTimeout": 0,
                         "waitForQuiescence": False,
                         "shouldUseCompactResponses": True,
-                        "snapshotMaxDepth": 35,
+                        "snapshotMaxDepth": 25,
                         "elementResponseAttributes": "type,label,name,value,rect,enabled,visible",
                     }
                 },
@@ -195,19 +199,27 @@ class FastWDAClient:
         label = str(node.get("label") or "").strip()
         name = str(node.get("name") or "").strip()
         value = str(node.get("value") or "").strip() if node.get("value") is not None else ""
-        rect = node.get("rect") or {}
-        if not isinstance(rect, dict):
-            rect = {}
-        x = int(rect.get("x", 0))
-        y = int(rect.get("y", 0))
-        w = int(rect.get("width", 0))
-        h = int(rect.get("height", 0))
-        enabled = bool(node.get("isEnabled", node.get("enabled", True)))
-        visible = node.get("isVisible", node.get("visible", True))
+        rect = node.get("rect")
+        if isinstance(rect, dict):
+            x = int(float(rect.get("x", 0) or 0))
+            y = int(float(rect.get("y", 0) or 0))
+            w = int(float(rect.get("width", 0) or 0))
+            h = int(float(rect.get("height", 0) or 0))
+        else:
+            m = _FRAME_RE.search(str(node.get("frame") or ""))
+            if m:
+                x, y, w, h = (int(float(m.group(i))) for i in range(1, 5))
+            else:
+                x = y = w = h = 0
+
+        raw_enabled = node.get("isEnabled", node.get("enabled", True))
+        enabled = str(raw_enabled).strip().lower() not in ("false", "0", "no")
+        raw_vis = node.get("isVisible", node.get("visible", True))
+        visible = str(raw_vis).strip().lower() not in ("false", "0", "no")
 
         has_text = bool(label or name or value)
         is_interactive = short_type in _INTERACTIVE_TYPES
-        if w > 0 and h > 0 and (not compact or ((has_text or is_interactive) and visible is not False)):
+        if w > 0 and h > 0 and (not compact or ((has_text or is_interactive) and visible)):
             if short_type not in ("Application", "Window") or has_text:
                 out.append(
                     {
@@ -243,9 +255,10 @@ class FastWDAClient:
             h = int(float(elem.attrib.get("height", "0") or 0))
             enabled = elem.attrib.get("enabled", "true").lower() != "false"
             visible = elem.attrib.get("visible", "true").lower() != "false"
+            in_bounds = w > 0 and h > 0 and (x + w) > 0 and (y + h) > 0 and y < 2200
             has_text = bool(label or name or value)
             is_interactive = short_type in _INTERACTIVE_TYPES
-            if w > 0 and h > 0 and (not compact or ((has_text or is_interactive) and visible)):
+            if in_bounds and (not compact or ((has_text or is_interactive) and visible)):
                 if short_type not in ("Application", "Window") or has_text:
                     out.append(
                         {
@@ -295,33 +308,62 @@ class FastWDAClient:
         except Exception as wda_err:
             return await self._accessibility_fallback(max_elements, wda_err)
 
-        for ep in ("/grogu/fast_tree", "/aimo/fast_tree"):
-            try:
-                data, latency_ms = await self._req("GET", ep, timeout=3.0)
-                val = data.get("value")
-                if isinstance(val, list):
-                    return {
-                        "ok": True,
-                        "source": "grogu_fast_tree",
-                        "latency_ms": latency_ms,
-                        "total_elements": len(val),
-                        "elements": val[:max_elements],
-                    }
-                if isinstance(val, dict):
-                    nodes: list[dict[str, Any]] = []
-                    self._flatten_json_tree(val, nodes, compact, max_elements)
-                    return {
-                        "ok": True,
-                        "source": "grogu_fast_tree",
-                        "latency_ms": latency_ms,
-                        "total_elements": len(nodes),
-                        "elements": nodes,
-                    }
-            except Exception:
-                continue
+        try:
+            await self.ensure_session()
+        except Exception:
+            pass
+
+        if self._has_custom_fast_tree is not False:
+            found_custom = False
+            for ep in ("/grogu/fast_tree", "/aimo/fast_tree"):
+                try:
+                    data, latency_ms = await self._req("GET", ep, timeout=3.0)
+                    val = data.get("value")
+                    self._has_custom_fast_tree = True
+                    found_custom = True
+                    if isinstance(val, list):
+                        return {
+                            "ok": True,
+                            "source": "grogu_fast_tree",
+                            "latency_ms": latency_ms,
+                            "total_elements": len(val),
+                            "elements": val[:max_elements],
+                        }
+                    if isinstance(val, dict):
+                        nodes: list[dict[str, Any]] = []
+                        self._flatten_json_tree(val, nodes, compact, max_elements)
+                        return {
+                            "ok": True,
+                            "source": "grogu_fast_tree",
+                            "latency_ms": latency_ms,
+                            "total_elements": len(nodes),
+                            "elements": nodes,
+                        }
+                except Exception as exc:
+                    low = str(exc).lower()
+                    if not ("404" in low or "unknown" in low or "unhandled" in low or "does not match" in low):
+                        break
+            if not found_custom:
+                self._has_custom_fast_tree = False
 
         try:
-            data, latency_ms = await self._req("GET", "/source?format=json", timeout=6.0)
+            data, latency_ms = await self._req("GET", "/source?excluded_attributes=visible,accessible", timeout=18.0)
+            xml_str = str(data.get("value") or "")
+            if not compact:
+                return {"ok": True, "source": "wda_xml_fast", "latency_ms": latency_ms, "xml": xml_str}
+            nodes = self._flatten_xml_tree(xml_str, compact=True, max_elements=max_elements)
+            return {
+                "ok": True,
+                "source": "wda_xml_fast",
+                "latency_ms": latency_ms,
+                "total_elements": len(nodes),
+                "elements": nodes,
+            }
+        except Exception as fast_xml_err:
+            last_err: Exception = fast_xml_err
+
+        try:
+            data, latency_ms = await self._req("GET", "/source?format=json", timeout=18.0)
             val = data.get("value")
             if isinstance(val, dict):
                 nodes = []
@@ -333,24 +375,10 @@ class FastWDAClient:
                     "total_elements": len(nodes),
                     "elements": nodes,
                 }
-        except Exception:
-            pass
+        except Exception as json_err:
+            last_err = json_err
 
-        try:
-            data, latency_ms = await self._req("GET", "/source", timeout=8.0)
-            xml_str = str(data.get("value") or "")
-            if not compact:
-                return {"ok": True, "source": "wda_xml", "latency_ms": latency_ms, "xml": xml_str}
-            nodes = self._flatten_xml_tree(xml_str, compact=True, max_elements=max_elements)
-            return {
-                "ok": True,
-                "source": "wda_xml",
-                "latency_ms": latency_ms,
-                "total_elements": len(nodes),
-                "elements": nodes,
-            }
-        except Exception as wda_err:
-            return await self._accessibility_fallback(max_elements, wda_err)
+        return await self._accessibility_fallback(max_elements, last_err)
 
     async def tap(self, x: int, y: int) -> dict[str, Any]:
         sid = await self.ensure_session()
