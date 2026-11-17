@@ -735,6 +735,15 @@ class _FlexibleTestConfig(TestConfig):
 
     bundle_relpath: Optional[str] = None
 
+    def __post_init__(self) -> None:
+        if self.bundle_relpath and self.runner_app_info:
+            app_path = self.runner_app_info["Path"]
+            env = dict(self.runner_app_env or {})
+            env.setdefault("XCTestBundlePath", f"{app_path}/{self.bundle_relpath}")
+            env.setdefault("DYLD_FRAMEWORK_PATH", f"{app_path}/Frameworks:/System/Developer/Library/Frameworks:")
+            env.setdefault("DYLD_LIBRARY_PATH", f"{app_path}/Frameworks:/System/Developer/usr/lib")
+            self.runner_app_env = env
+
     def to_xctestconfiguration(self, session_identifier: Any, service_provider: Any) -> Any:
         res = super().to_xctestconfiguration(session_identifier, service_provider)
         if self.bundle_relpath and self.runner_app_info:
