@@ -136,16 +136,65 @@ class FastWDAClient:
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         data: dict[str, Any] = resp.json() if resp.content else {}
         if resp.status_code >= 400:
-            if resp.status_code in (404, 410) and "/session/" in path:
-                self._session_id = None
             val = data.get("value")
+            err_tag = str(val.get("error") or "").lower() if isinstance(val, dict) else ""
             msg = val.get("message") if isinstance(val, dict) else (val or resp.text)
+            msg_low = f"{err_tag} {msg}".lower()
+            if resp.status_code in (404, 410) and "/session/" in path and (
+                "session does not exist" in msg_low or "invalid session" in msg_low
+            ):
+                self._session_id = None
             raise RuntimeError(f"WDA HTTP {resp.status_code} on {path}: {msg}")
         return data, elapsed_ms
+
+    async def _apply_fast_settings(self, sid: str) -> None:
+        await self._req(
+            "POST",
+            f"/session/{sid}/appium/settings",
+            {
+                "settings": {
+                    "waitForIdleTimeout": 0,
+                    "waitForQuiescence": False,
+                    "shouldUseCompactResponses": True,
+                    "snapshotMaxDepth": 25,
+                    "elementResponseAttributes": "type,label,name,value,rect,enabled,visible",
+                }
+            },
+            timeout=3.0,
+        )
+
+    async def _session_req(
+        self,
+        method: str,
+        subpath: str,
+        json_body: Optional[dict[str, Any]] = None,
+        timeout: float = 8.0,
+    ) -> tuple[dict[str, Any], float]:
+        sid = await self.ensure_session()
+        try:
+            return await self._req(method, f"/session/{sid}{subpath}", json_body, timeout=timeout)
+        except RuntimeError as exc:
+            low = str(exc).lower()
+            if "session does not exist" in low or "invalid session" in low:
+                self._session_id = None
+                sid = await self.ensure_session(force_new=True)
+                return await self._req(method, f"/session/{sid}{subpath}", json_body, timeout=timeout)
+            raise
 
     async def ensure_session(self, bundle_id: Optional[str] = None, force_new: bool = False) -> str:
         if self._session_id and not force_new:
             return self._session_id
+        if not force_new and not bundle_id:
+            try:
+                st_data, _ = await self._req("GET", "/status", timeout=3.0)
+                st_val = st_data.get("value")
+                cand_sid = st_data.get("sessionId") or (st_val.get("sessionId") if isinstance(st_val, dict) else None)
+                if cand_sid:
+                    await self._apply_fast_settings(str(cand_sid))
+                    self._session_id = str(cand_sid)
+                    return self._session_id
+            except Exception:
+                self._session_id = None
         caps: dict[str, Any] = {}
         if bundle_id:
             caps["bundleId"] = bundle_id
@@ -162,20 +211,7 @@ class FastWDAClient:
             raise RuntimeError(f"WDA /session returned no sessionId: {data}")
         self._session_id = str(sid)
         try:
-            await self._req(
-                "POST",
-                f"/session/{self._session_id}/appium/settings",
-                {
-                    "settings": {
-                        "waitForIdleTimeout": 0,
-                        "waitForQuiescence": False,
-                        "shouldUseCompactResponses": True,
-                        "snapshotMaxDepth": 25,
-                        "elementResponseAttributes": "type,label,name,value,rect,enabled,visible",
-                    }
-                },
-                timeout=3.0,
-            )
+            await self._apply_fast_settings(self._session_id)
         except Exception:
             pass
         return self._session_id
@@ -191,8 +227,7 @@ class FastWDAClient:
     async def window_size(self) -> dict[str, int]:
         if self._window_size:
             return self._window_size
-        sid = await self.ensure_session()
-        data, _ = await self._req("GET", f"/session/{sid}/window/size", timeout=4.0)
+        data, _ = await self._session_req("GET", "/window/size", timeout=4.0)
         val = data.get("value") or {}
         w = int(val.get("width", 744))
         h = int(val.get("height", 1133))
@@ -395,13 +430,15 @@ class FastWDAClient:
         return await self._accessibility_fallback(max_elements, last_err)
 
     async def tap(self, x: int, y: int) -> dict[str, Any]:
-        sid = await self.ensure_session()
         try:
-            _, latency_ms = await self._req("POST", f"/session/{sid}/wda/tap", {"x": int(x), "y": int(y)})
-        except Exception:
-            _, latency_ms = await self._req(
+            _, latency_ms = await self._session_req("POST", "/wda/tap", {"x": int(x), "y": int(y)})
+        except RuntimeError as exc:
+            low = str(exc).lower()
+            if "unhandled" not in low and "unknown command" not in low and "404" not in low:
+                raise
+            _, latency_ms = await self._session_req(
                 "POST",
-                f"/session/{sid}/actions",
+                "/actions",
                 {
                     "actions": [
                         {
@@ -421,32 +458,28 @@ class FastWDAClient:
         return {"ok": True, "x": int(x), "y": int(y), "latency_ms": latency_ms}
 
     async def double_tap(self, x: int, y: int) -> dict[str, Any]:
-        sid = await self.ensure_session()
-        _, latency_ms = await self._req("POST", f"/session/{sid}/wda/doubleTap", {"x": int(x), "y": int(y)})
+        _, latency_ms = await self._session_req("POST", "/wda/doubleTap", {"x": int(x), "y": int(y)})
         return {"ok": True, "x": int(x), "y": int(y), "latency_ms": latency_ms}
 
     async def long_press(self, x: int, y: int, duration_s: float = 1.0) -> dict[str, Any]:
-        sid = await self.ensure_session()
-        _, latency_ms = await self._req(
+        _, latency_ms = await self._session_req(
             "POST",
-            f"/session/{sid}/wda/touchAndHold",
+            "/wda/touchAndHold",
             {"x": int(x), "y": int(y), "duration": float(duration_s)},
         )
         return {"ok": True, "x": int(x), "y": int(y), "duration_s": duration_s, "latency_ms": latency_ms}
 
     async def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 250) -> dict[str, Any]:
-        sid = await self.ensure_session()
         duration_s = max(0.05, duration_ms / 1000.0)
-        _, latency_ms = await self._req(
+        _, latency_ms = await self._session_req(
             "POST",
-            f"/session/{sid}/wda/dragfromtoforduration",
+            "/wda/dragfromtoforduration",
             {"fromX": int(x1), "fromY": int(y1), "toX": int(x2), "toY": int(y2), "duration": duration_s},
         )
         return {"ok": True, "from": [x1, y1], "to": [x2, y2], "duration_ms": duration_ms, "latency_ms": latency_ms}
 
     async def type_text(self, text: str) -> dict[str, Any]:
-        sid = await self.ensure_session()
-        _, latency_ms = await self._req("POST", f"/session/{sid}/wda/keys", {"value": list(text)}, timeout=12.0)
+        _, latency_ms = await self._session_req("POST", "/wda/keys", {"value": list(text)}, timeout=12.0)
         return {"ok": True, "text": text, "latency_ms": latency_ms}
 
     async def press_button(self, name: str) -> dict[str, Any]:
@@ -463,23 +496,19 @@ class FastWDAClient:
                 return {"ok": True, "button": "home", "latency_ms": latency_ms}
             except Exception:
                 pass
-        sid = await self.ensure_session()
-        _, latency_ms = await self._req("POST", f"/session/{sid}/wda/pressButton", {"name": norm})
+        _, latency_ms = await self._session_req("POST", "/wda/pressButton", {"name": norm})
         return {"ok": True, "button": norm, "latency_ms": latency_ms}
 
     async def launch_app(self, bundle_id: str) -> dict[str, Any]:
-        sid = await self.ensure_session()
-        _, latency_ms = await self._req("POST", f"/session/{sid}/wda/apps/launch", {"bundleId": bundle_id}, timeout=10.0)
+        _, latency_ms = await self._session_req("POST", "/wda/apps/launch", {"bundleId": bundle_id}, timeout=10.0)
         return {"ok": True, "bundle_id": bundle_id, "latency_ms": latency_ms}
 
     async def terminate_app(self, bundle_id: str) -> dict[str, Any]:
-        sid = await self.ensure_session()
-        _, latency_ms = await self._req("POST", f"/session/{sid}/wda/apps/terminate", {"bundleId": bundle_id})
+        _, latency_ms = await self._session_req("POST", "/wda/apps/terminate", {"bundleId": bundle_id})
         return {"ok": True, "bundle_id": bundle_id, "latency_ms": latency_ms}
 
     async def open_url(self, url: str) -> dict[str, Any]:
-        sid = await self.ensure_session()
-        _, latency_ms = await self._req("POST", f"/session/{sid}/url", {"url": url}, timeout=10.0)
+        _, latency_ms = await self._session_req("POST", "/url", {"url": url}, timeout=10.0)
         return {"ok": True, "url": url, "latency_ms": latency_ms}
 
     async def screenshot(self, out_path: str | Path) -> dict[str, Any]:

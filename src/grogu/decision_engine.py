@@ -625,6 +625,7 @@ class DecisionEngine:
             "launch(app), open_url(url), tap(x,y), tap_selector(text), swipe(direction: up|down|left|right), "
             "type(text,submit), button(name: home). "
             "Note: to scroll down the list/page use swipe(direction='up'). "
+            "On split-view apps (e.g. iPad Settings), left sidebar items (x<300) remain directly tappable — tap the target sidebar Button directly instead of NavigationBar headers. "
             "Set done=true and steps=[] ONLY when history and visible UI confirm the goal screen is already reached."
         )
         req_body: dict[str, Any] = {
