@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grogu-ios"
+version = "0.1.0"
+description = "Control unjailbroken iOS/iPadOS devices natively over Tailscale: direct DVT telemetry, millisecond Decision API, FastWDA UI trees, Siri voice takeover & MCP server."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [
+  {name = "Overbaker"}
+]
+keywords = ["ios", "ipados", "tailscale", "mcp", "webdriveragent", "xcuitest", "pymobiledevice3", "siri", "automation"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Testing",
+]
+dependencies = [
+  "httpx>=0.27.0",
+  "mcp>=1.2.0",
+  "starlette>=0.40.0",
+  "uvicorn>=0.30.0",
+]
+
+[project.optional-dependencies]
+worker = [
+  "pymobiledevice3>=11.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Overbaker/grogu"
+Repository = "https://github.com/Overbaker/grogu"
+
+[project.scripts]
+grogu-gateway = "grogu.gateway:main"
+grogu-mcp = "grogu.mcp_server:main"
+grogu-worker = "grogu.pmd_worker:main"
+grogu-prepare-wda-ipa = "grogu.prepare_sideload_ipa:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

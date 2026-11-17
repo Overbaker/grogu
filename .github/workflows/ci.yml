@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+      - name: Compile Python modules
+        run: |
+          python -m compileall -q src wda_patch
+      - name: Smoke test CLI & MCP imports
+        run: |
+          grogu-mcp --help
+          grogu-prepare-wda-ipa --help
+          python -c "import grogu.gateway, grogu.decision_engine, grogu.wda_client, grogu.core, grogu.prepare_sideload_ipa; print('OK')"
