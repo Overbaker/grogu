@@ -382,7 +382,28 @@ class FastWDAClient:
 
     async def tap(self, x: int, y: int) -> dict[str, Any]:
         sid = await self.ensure_session()
-        _, latency_ms = await self._req("POST", f"/session/{sid}/wda/tap/0", {"x": int(x), "y": int(y)})
+        try:
+            _, latency_ms = await self._req("POST", f"/session/{sid}/wda/tap", {"x": int(x), "y": int(y)})
+        except Exception:
+            _, latency_ms = await self._req(
+                "POST",
+                f"/session/{sid}/actions",
+                {
+                    "actions": [
+                        {
+                            "type": "pointer",
+                            "id": "finger1",
+                            "parameters": {"pointerType": "touch"},
+                            "actions": [
+                                {"type": "pointerMove", "duration": 0, "x": int(x), "y": int(y)},
+                                {"type": "pointerDown", "button": 0},
+                                {"type": "pause", "duration": 50},
+                                {"type": "pointerUp", "button": 0},
+                            ],
+                        }
+                    ]
+                },
+            )
         return {"ok": True, "x": int(x), "y": int(y), "latency_ms": latency_ms}
 
     async def double_tap(self, x: int, y: int) -> dict[str, Any]:
