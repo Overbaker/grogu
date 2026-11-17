@@ -50,6 +50,7 @@ async def health(request: Request) -> JSONResponse:
             "ports": ports,
             "pairing": pairing,
             "wda": wda_info,
+            "ai_engines": engine.get_ai_engine_status(),
         }
     )
 
@@ -111,6 +112,20 @@ async def decision_execute(request: Request) -> JSONResponse:
         if not isinstance(steps, list) or not steps:
             return JSONResponse({"ok": False, "error": "Request JSON must include non-empty 'steps' list"}, status_code=400)
         res = await engine.execute_steps(steps)
+        return JSONResponse(res, status_code=200 if res.get("ok") else 500)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+async def ai_act(request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+        if not isinstance(body, dict) or not str(body.get("goal", "")).strip():
+            return JSONResponse({"ok": False, "error": "Request JSON must include non-empty 'goal'"}, status_code=400)
+        goal = str(body["goal"]).strip()
+        max_steps = int(body.get("max_steps", 6))
+        prefer = str(body.get("prefer", "auto"))
+        res = await engine.run_ai_goal(goal, max_steps=max_steps, prefer=prefer)
         return JSONResponse(res, status_code=200 if res.get("ok") else 500)
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
@@ -274,6 +289,7 @@ async def bootstrap_wda_sideload_ipa(request: Request):
 @asynccontextmanager
 async def lifespan(app: Starlette):
     yield
+    await engine.aclose()
     await wda.aclose()
 
 
@@ -284,6 +300,7 @@ app = Starlette(
         Route("/api/siri/command", siri_command, methods=["POST"]),
         Route("/api/siri/tasks", siri_tasks, methods=["GET"]),
         Route("/api/decision/execute", decision_execute, methods=["POST"]),
+        Route("/api/ai/act", ai_act, methods=["POST"]),
         Route("/api/ui/dump", ui_dump, methods=["GET"]),
         Route("/api/telemetry/{kind}", telemetry, methods=["GET"]),
         Route("/bootstrap/mac.sh", bootstrap_mac_script, methods=["GET"]),

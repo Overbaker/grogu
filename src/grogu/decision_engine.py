@@ -53,11 +53,15 @@ APP_ALIASES: dict[str, str] = {
 
 
 class DecisionEngine:
-    """Fast deterministic Decision API + Siri voice router + optional async LLM planner."""
+    """Fast deterministic Decision API + Siri voice router + Gemini Decision-1 & fast MoE planner."""
 
     def __init__(self, core: Optional[GroguCoreManager] = None, wda: Optional[FastWDAClient] = None) -> None:
         self.core = core or GroguCoreManager()
         self.wda = wda or FastWDAClient(core=self.core)
+        self._http = httpx.AsyncClient(timeout=20.0)
+
+    async def aclose(self) -> None:
+        await self._http.aclose()
 
     def resolve_target(self, app_or_url: str) -> tuple[str, str]:
         raw = app_or_url.strip()
@@ -232,6 +236,11 @@ class DecisionEngine:
                     res = {"ok": True, "slept_ms": ms}
                 elif op == "reflex":
                     res = await self.wda.on_device_reflex(step)
+                elif op == "ai_tap":
+                    goal = str(step.get("goal") or step.get("text") or "").strip()
+                    if not goal:
+                        raise ValueError("ai_tap step requires 'goal' or 'text'")
+                    res = await self.run_ai_goal(goal, max_steps=1, prefer=str(step.get("prefer") or "auto"))
                 else:
                     raise ValueError(f"Unsupported Decision API op: {op!r}")
 
@@ -391,6 +400,384 @@ class DecisionEngine:
 
         return ("async_llm", t, f"收到，正在为你执行：{t}。")
 
+    def _get_openrouter_config(self) -> tuple[str, str, str]:
+        api_key = (
+            os.environ.get("OPENROUTER_API_KEY")
+            or os.environ.get("GROGU_DECISION_API_KEY")
+            or ""
+        ).strip()
+        url = (
+            os.environ.get("OPENROUTER_DECISIONS_URL")
+            or os.environ.get("GROGU_DECISIONS_URL")
+            or "https://openrouter.ai/api/alpha/decisions"
+        ).strip()
+        model = (
+            os.environ.get("GROGU_DECISION_MODEL")
+            or os.environ.get("OPENROUTER_DECISION_MODEL")
+            or "google/gemini-decision-1"
+        ).strip()
+        return api_key, url, model
+
+    def _get_llm_config(self) -> tuple[str, str, str, bool]:
+        base = os.environ.get("GROGU_LLM_BASE_URL", "").strip()
+        key = os.environ.get("GROGU_LLM_API_KEY", "").strip()
+        model = os.environ.get("GROGU_LLM_MODEL", "gpt-4o-mini").strip()
+        disable_thinking = os.environ.get("GROGU_LLM_DISABLE_THINKING", "true").strip().lower() not in (
+            "false",
+            "0",
+            "no",
+        )
+        return base, key, model, disable_thinking
+
+    def get_ai_engine_status(self) -> dict[str, Any]:
+        or_key, _, or_model = self._get_openrouter_config()
+        llm_base, llm_key, llm_model, disable_thinking = self._get_llm_config()
+        return {
+            "decision_1_configured": bool(or_key),
+            "decision_1_model": or_model,
+            "fast_llm_configured": bool(llm_base and llm_key),
+            "fast_llm_model": llm_model if (llm_base and llm_key) else "",
+            "disable_thinking": disable_thinking,
+        }
+
+    @staticmethod
+    def _parse_json_object(raw_text: str) -> dict[str, Any]:
+        cleaned = raw_text.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE | re.DOTALL).strip()
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end > start:
+            parsed = json.loads(cleaned[start : end + 1])
+            if isinstance(parsed, dict):
+                return parsed
+        raise ValueError(f"Model did not return a JSON object: {raw_text[:200]!r}")
+
+    async def decide_with_openrouter(
+        self, goal: str, elements: list[dict[str, Any]], history: list[str]
+    ) -> Optional[dict[str, Any]]:
+        api_key, url, model = self._get_openrouter_config()
+        if not api_key:
+            return None
+
+        criteria: dict[str, str] = {}
+        el_by_key: dict[str, dict[str, Any]] = {}
+        for pos, el in enumerate(elements):
+            if len(criteria) >= 240:
+                break
+            idx = int(el.get("index", pos))
+            el_type = str(el.get("type") or "AXElement")
+            label = str(el.get("label") or "").strip()
+            name = str(el.get("name") or "").strip()
+            val = str(el.get("value") or "").strip()
+            if not (label or name or val):
+                continue
+            key = f"el_{idx}"
+            center = el.get("center")
+            coord_txt = f" @{center}" if center else ""
+            criteria[key] = f"[{el_type}] label={label!r} name={name!r} val={val!r}{coord_txt}"
+            el_by_key[key] = el
+
+        criteria["act_scroll_down"] = "Scroll down to reveal more content below"
+        criteria["act_scroll_up"] = "Scroll up to reveal content above"
+        criteria["act_navigate_back"] = "Swipe right / go back to previous screen"
+        criteria["act_go_home"] = "Press Home button to return to home screen"
+        criteria["act_need_text_or_launch"] = "Requires typing text into a field or launching a different app by name"
+
+        payload = {
+            "model": model,
+            "state": {"goal": goal, "step_history": history[-6:]},
+            "questions": {
+                "goal_complete": {
+                    "type": "noul",
+                    "instructions": (
+                        "Has the user's goal ALREADY been completely satisfied on the current screen "
+                        "(after taking the steps in step_history)?"
+                    ),
+                    "criteria": {
+                        "true": "The requested target screen or setting state is already achieved.",
+                        "false": "At least one more action is still required.",
+                    },
+                },
+                "next_action": {
+                    "type": "choice",
+                    "instructions": f"Goal: {goal}. Select the single best UI element to tap or navigation action to perform next.",
+                    "criteria": criteria,
+                },
+            },
+        }
+        resp = await self._http.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        answers = data.get("answers") or {}
+
+        gc = answers.get("goal_complete") or {}
+        noul_prob = float(gc.get("noul") or 0.0)
+        if history and noul_prob >= 0.82:
+            return {
+                "done": True,
+                "reason": "goal_complete satisfied via single-pass check",
+                "engine": model,
+                "confidence": gc.get("confidence"),
+                "noul": noul_prob,
+                "steps": [],
+            }
+
+        na = answers.get("next_action") or {}
+        choice = str(na.get("choice") or "").strip()
+        probs = na.get("probabilities") or {}
+        if not choice or choice == "act_need_text_or_launch":
+            return None
+
+        if choice.startswith("el_") and choice in el_by_key:
+            matched = el_by_key[choice]
+            center = matched.get("center")
+            if isinstance(center, list) and len(center) == 2:
+                step = {"op": "tap", "x": int(center[0]), "y": int(center[1])}
+            else:
+                step = {"op": "tap_selector", "text": str(matched.get("label") or matched.get("name") or "")}
+            return {
+                "done": False,
+                "reason": f"Selected {choice}",
+                "engine": model,
+                "choice": choice,
+                "confidence": na.get("confidence"),
+                "probability": probs.get(choice),
+                "matched": matched,
+                "steps": [step],
+            }
+
+        synthetic_map = {
+            "act_scroll_down": [{"op": "swipe", "direction": "up"}],
+            "act_scroll_up": [{"op": "swipe", "direction": "down"}],
+            "act_navigate_back": [{"op": "swipe", "direction": "right"}],
+            "act_go_home": [{"op": "button", "name": "home"}],
+        }
+        if choice in synthetic_map:
+            return {
+                "done": False,
+                "reason": f"Selected {choice}",
+                "engine": model,
+                "choice": choice,
+                "confidence": na.get("confidence"),
+                "probability": probs.get(choice),
+                "steps": synthetic_map[choice],
+            }
+        return None
+
+    async def plan_step_with_fast_llm(
+        self,
+        goal: str,
+        elements: list[dict[str, Any]],
+        history: list[str],
+        *,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> dict[str, Any]:
+        cfg_base, cfg_key, cfg_model, disable_thinking = self._get_llm_config()
+        use_base = (base_url or cfg_base).strip()
+        use_key = (api_key or cfg_key).strip()
+        use_model = (model or cfg_model).strip()
+        if not use_base or not use_key:
+            raise RuntimeError("No LLM endpoint/key configured (set GROGU_LLM_BASE_URL & GROGU_LLM_API_KEY)")
+
+        compact_ui: list[dict[str, Any]] = []
+        el_by_index: dict[int, dict[str, Any]] = {}
+        for pos, el in enumerate(elements):
+            idx = int(el.get("index", pos))
+            el_by_index[idx] = el
+            lbl = str(el.get("label") or "").strip()
+            name = str(el.get("name") or "").strip()
+            val = str(el.get("value") or "").strip()
+            el_type = str(el.get("type") or "")
+            if not (lbl or name or val) and el_type in ("Cell", "Other", "CollectionView", "Window", "Application"):
+                continue
+            item: dict[str, Any] = {"i": idx, "t": el_type}
+            if lbl:
+                item["l"] = lbl[:80]
+            if name and name != lbl:
+                item["n"] = name[:60]
+            if val and val != lbl:
+                item["v"] = val[:40]
+            if el.get("center"):
+                item["c"] = el["center"]
+            compact_ui.append(item)
+            if len(compact_ui) >= 160:
+                break
+
+        sys_prompt = (
+            "You control an iOS/iPadOS device via Grogu JSON Decision API. Given goal, compact indexed UI elements "
+            "(i=index, t=type, l=label, n=name, v=value, c=[x,y]), and history, output ONLY raw JSON: "
+            "{\"done\": bool, \"reason\": str, \"tap_index\": int|null, \"steps\": [{\"op\": ...}]}. "
+            "Set tap_index (preferred for clicking a listed element) OR steps using allowed ops: "
+            "launch(app), open_url(url), tap(x,y), tap_selector(text), swipe(direction: up|down|left|right), "
+            "type(text,submit), button(name: home). "
+            "Note: to scroll down the list/page use swipe(direction='up'). "
+            "Set done=true and steps=[] ONLY when history and visible UI confirm the goal screen is already reached."
+        )
+        req_body: dict[str, Any] = {
+            "model": use_model,
+            "temperature": 0,
+            "max_tokens": 180,
+            "messages": [
+                {"role": "system", "content": sys_prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {"goal": goal, "history": history[-6:], "ui": compact_ui},
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        }
+        if disable_thinking:
+            req_body["chat_template_kwargs"] = {"enable_thinking": False}
+
+        headers = {"Authorization": f"Bearer {use_key}", "Content-Type": "application/json"}
+        endpoint = f"{use_base.rstrip('/')}/chat/completions"
+        resp = await self._http.post(endpoint, headers=headers, json=req_body, timeout=20.0)
+        if resp.status_code == 400 and "chat_template_kwargs" in req_body:
+            req_body.pop("chat_template_kwargs", None)
+            resp = await self._http.post(endpoint, headers=headers, json=req_body, timeout=20.0)
+        resp.raise_for_status()
+
+        raw_content = resp.json()["choices"][0]["message"].get("content") or ""
+        plan = self._parse_json_object(raw_content)
+        steps = list(plan.get("steps") or [])
+        tap_idx = plan.get("tap_index")
+        if tap_idx is not None and not steps:
+            idx_int = int(tap_idx)
+            matched = el_by_index.get(idx_int)
+            if matched and isinstance(matched.get("center"), list) and len(matched["center"]) == 2:
+                cx, cy = matched["center"]
+                steps = [{"op": "tap", "x": int(cx), "y": int(cy)}]
+                plan["matched"] = matched
+            elif matched:
+                txt = str(matched.get("label") or matched.get("name") or "")
+                steps = [{"op": "tap_selector", "text": txt}]
+                plan["matched"] = matched
+        plan["steps"] = steps
+        plan["engine"] = use_model
+        return plan
+
+    async def run_ai_goal(
+        self,
+        goal: str,
+        max_steps: int = 6,
+        prefer: str = "auto",
+        *,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> dict[str, Any]:
+        t_total0 = time.perf_counter()
+        trace: list[dict[str, Any]] = []
+        history: list[str] = []
+        or_key, _, _ = self._get_openrouter_config()
+
+        for step_idx in range(max(1, int(max_steps))):
+            t_d0 = time.perf_counter()
+            dump = await self.wda.fast_ui_dump(compact=True, max_elements=160)
+            dump_ms = round((time.perf_counter() - t_d0) * 1000, 1)
+            elements = dump.get("elements") or []
+
+            plan: Optional[dict[str, Any]] = None
+            t_a0 = time.perf_counter()
+            if prefer in ("auto", "decision-1") and or_key and not base_url:
+                try:
+                    plan = await self.decide_with_openrouter(goal, elements, history)
+                except Exception:
+                    plan = None
+            if plan is None:
+                plan = await self.plan_step_with_fast_llm(
+                    goal,
+                    elements,
+                    history,
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=model,
+                )
+            ai_ms = round((time.perf_counter() - t_a0) * 1000, 1)
+
+            steps = plan.get("steps") or []
+            if plan.get("done") and not steps:
+                trace.append(
+                    {
+                        "step": step_idx,
+                        "engine": plan.get("engine"),
+                        "dump_ms": dump_ms,
+                        "ai_ms": ai_ms,
+                        "exec_ms": 0.0,
+                        "plan": plan,
+                    }
+                )
+                return {
+                    "ok": True,
+                    "goal": goal,
+                    "steps_taken": len(trace),
+                    "total_latency_ms": round((time.perf_counter() - t_total0) * 1000, 1),
+                    "trace": trace,
+                }
+
+            t_e0 = time.perf_counter()
+            exec_res = await self.execute_steps(steps) if steps else {"ok": True, "step_results": []}
+            exec_ms = round((time.perf_counter() - t_e0) * 1000, 1)
+
+            summary = f"step {step_idx}: {plan.get('reason') or steps}"
+            if plan.get("matched"):
+                summary += f" -> {plan['matched'].get('label') or plan['matched'].get('name')}"
+            history.append(summary)
+
+            trace.append(
+                {
+                    "step": step_idx,
+                    "engine": plan.get("engine"),
+                    "dump_ms": dump_ms,
+                    "ai_ms": ai_ms,
+                    "exec_ms": exec_ms,
+                    "plan": plan,
+                    "exec": exec_res,
+                }
+            )
+            if not exec_res.get("ok"):
+                return {
+                    "ok": False,
+                    "goal": goal,
+                    "steps_taken": len(trace),
+                    "total_latency_ms": round((time.perf_counter() - t_total0) * 1000, 1),
+                    "trace": trace,
+                }
+            if plan.get("done"):
+                return {
+                    "ok": True,
+                    "goal": goal,
+                    "steps_taken": len(trace),
+                    "total_latency_ms": round((time.perf_counter() - t_total0) * 1000, 1),
+                    "trace": trace,
+                }
+            await asyncio.sleep(0.35)
+
+        return {
+            "ok": False,
+            "error": "Max AI steps reached",
+            "goal": goal,
+            "steps_taken": len(trace),
+            "total_latency_ms": round((time.perf_counter() - t_total0) * 1000, 1),
+            "trace": trace,
+        }
+
     async def run_async_voice_task(self, task_id: str, mode: str, payload: Any, original_text: str) -> None:
         # Allow Siri overlay orb to dismiss before dispatching UI actions
         await asyncio.sleep(0.45)
@@ -410,13 +797,10 @@ class DecisionEngine:
             )
             return
 
-        llm_base = os.environ.get("GROGU_LLM_BASE_URL", "").strip()
-        llm_key = os.environ.get("GROGU_LLM_API_KEY", "").strip()
-        llm_model = os.environ.get("GROGU_LLM_MODEL", "gpt-4o-mini").strip()
-
-        if llm_base and llm_key:
+        status = self.get_ai_engine_status()
+        if status["decision_1_configured"] or status["fast_llm_configured"]:
             try:
-                res = await self._run_lm_loop(original_text, llm_base, llm_key, llm_model)
+                res = await self.run_ai_goal(original_text, max_steps=6)
                 self.log_siri_task(
                     {
                         "task_id": task_id,
@@ -454,41 +838,10 @@ class DecisionEngine:
                 "text": original_text,
                 "mode": "queued_for_lm",
                 "ok": True,
-                "note": "No GROGU_LLM_BASE_URL set; captured UI context and queued for MCP agent.",
+                "note": "No GROGU_LLM_BASE_URL or OPENROUTER_API_KEY set; captured UI context and queued for MCP agent.",
                 "snapshot": snapshot,
             }
         )
 
     async def _run_lm_loop(self, goal: str, base_url: str, api_key: str, model: str, max_steps: int = 8) -> dict[str, Any]:
-        trace: list[dict[str, Any]] = []
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            for step_idx in range(max_steps):
-                dump = await self.wda.fast_ui_dump(compact=True, max_elements=80)
-                sys_prompt = (
-                    "You control an iOS/iPadOS device via Grogu JSON Decision API. Given the goal and compact UI elements, "
-                    "output ONLY JSON: {\"done\": bool, \"reason\": str, \"steps\": [{\"op\": ...}]}. "
-                    "Allowed ops: launch(app), open_url(url), tap(x,y), tap_selector(text), swipe(direction), type(text,submit), button(name)."
-                )
-                resp = await client.post(
-                    f"{base_url.rstrip('/')}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    json={
-                        "model": model,
-                        "response_format": {"type": "json_object"},
-                        "messages": [
-                            {"role": "system", "content": sys_prompt},
-                            {
-                                "role": "user",
-                                "content": json.dumps({"goal": goal, "step": step_idx, "ui": dump}, ensure_ascii=False),
-                            },
-                        ],
-                    },
-                )
-                resp.raise_for_status()
-                plan = json.loads(resp.json()["choices"][0]["message"]["content"])
-                steps = plan.get("steps") or []
-                exec_res = await self.execute_steps(steps) if steps else {"ok": True, "step_results": []}
-                trace.append({"step": step_idx, "plan": plan, "exec": exec_res})
-                if plan.get("done"):
-                    return {"ok": True, "trace": trace}
-        return {"ok": False, "error": "Max LLM steps reached", "trace": trace}
+        return await self.run_ai_goal(goal, max_steps=max_steps, prefer="llm", base_url=base_url, api_key=api_key, model=model)

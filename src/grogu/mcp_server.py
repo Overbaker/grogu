@@ -101,12 +101,18 @@ async def ios_launch_app(app_target: str) -> dict[str, Any]:
 
 @mcp.tool()
 async def ios_decision_run(steps_json: str) -> dict[str, Any]:
-    """Execute a deterministic Decision API JSON step list (launch, open_url, tap, tap_selector, wait_selector, swipe, type, button, sleep, reflex)."""
+    """Execute a deterministic Decision API JSON step list (launch, open_url, tap, tap_selector, wait_selector, swipe, type, button, sleep, reflex, ai_tap)."""
     parsed = json.loads(steps_json)
     steps = parsed["steps"] if isinstance(parsed, dict) and "steps" in parsed else parsed
     if not isinstance(steps, list):
         raise ValueError("steps_json must decode to a JSON array of steps or {'steps': [...]}")
     return await _engine.execute_steps(steps)
+
+
+@mcp.tool()
+async def ios_ai_act(goal: str, max_steps: int = 6, prefer: str = "auto") -> dict[str, Any]:
+    """Execute a multi-step natural-language iOS/iPadOS UI goal via Decision-1 + fast LLM routing."""
+    return await _engine.run_ai_goal(goal, max_steps=max_steps, prefer=prefer)
 
 
 @mcp.tool()

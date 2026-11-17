@@ -57,6 +57,7 @@ class FastWDAClient:
         self.direct_url = (direct_url or f"http://{self.core.device_ip or DEVICE_IP}:8100").rstrip("/")
         self.forward_url = (forward_url or f"http://127.0.0.1:{WDA_FORWARD_PORT}").rstrip("/")
         self._active_base_url: Optional[str] = None
+        self._base_url_verified_at: float = 0.0
         self._session_id: Optional[str] = None
         self._window_size: Optional[dict[str, int]] = None
         self._has_custom_fast_tree: Optional[bool] = None
@@ -85,6 +86,9 @@ class FastWDAClient:
         if xctest_err and self._active_base_url is None:
             raise RuntimeError(f"WDA XCTest not active ({xctest_err})")
 
+        if self._active_base_url and (time.monotonic() - self._base_url_verified_at) < 30.0:
+            return self._active_base_url
+
         for candidate in ([self._active_base_url] if self._active_base_url else []) + [
             self.direct_url,
             self.forward_url,
@@ -95,18 +99,21 @@ class FastWDAClient:
                 resp = await self._client.get(f"{candidate}/status", timeout=2.0)
                 if resp.status_code == 200:
                     self._active_base_url = candidate
+                    self._base_url_verified_at = time.monotonic()
                     return candidate
             except Exception:
                 continue
 
         if xctest_err:
             self._active_base_url = None
+            self._base_url_verified_at = 0.0
             raise RuntimeError(f"WDA XCTest not active ({xctest_err})")
 
         res = await self.core.ensure_tunnel_and_wda(timeout_s=12.0)
         if not res.get("ok"):
             raise RuntimeError(res.get("error") or "WDA is unreachable")
         self._active_base_url = str(res["wda_url"]).rstrip("/")
+        self._base_url_verified_at = time.monotonic()
         return self._active_base_url
 
     async def _req(
@@ -118,7 +125,14 @@ class FastWDAClient:
     ) -> tuple[dict[str, Any], float]:
         base = await self._resolve_base_url()
         t0 = time.perf_counter()
-        resp = await self._client.request(method, f"{base}{path}", json=json_body, timeout=timeout)
+        try:
+            resp = await self._client.request(method, f"{base}{path}", json=json_body, timeout=timeout)
+        except httpx.TransportError:
+            self._active_base_url = None
+            self._base_url_verified_at = 0.0
+            base = await self._resolve_base_url()
+            t0 = time.perf_counter()
+            resp = await self._client.request(method, f"{base}{path}", json=json_body, timeout=timeout)
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         data: dict[str, Any] = resp.json() if resp.content else {}
         if resp.status_code >= 400:

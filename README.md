@@ -31,7 +31,10 @@ flowchart LR
 2. **Dual-Speed UI Control (`FastWDAClient` + `DecisionEngine`) — Works Even Without WDA**
    - **Zero-WDA Native Fallback**: Before or without WebDriverAgent running, `ios_ui_dump` (`GET /api/ui/dump`) automatically falls back to DVT `AccessibilityAudit`, `launch` / `open_url` fall back to `DvtProvider` `ProcessControl` (`dvt_launch`), and screenshots use DVT `Screenshot` — zero sideloading required for inspection, deep-link app launching, and voice reading.
    - **Full Gesture Mode (`FastWDA`)**: Compacts the XCUITest accessibility hierarchy (`type`, `label`, `name`, `value`, `rect`, `center`) with `waitForIdleTimeout=0` and `waitForQuiescence=false`.
-   - **Decision API (`ios_decision_run` / `POST /api/decision/execute`)**: Executes deterministic steps (`launch`, `open_url`, `tap`, `tap_selector`, `wait_selector`, `swipe`, `type`, `button`, `sleep`, `reflex`) with per-step millisecond telemetry.
+   - **Decision API (`ios_decision_run` / `POST /api/decision/execute`)**: Executes deterministic steps (`launch`, `open_url`, `tap`, `tap_selector`, `wait_selector`, `swipe`, `type`, `button`, `sleep`, `reflex`, `ai_tap`) with per-step millisecond telemetry.
+   - **Dual-Engine AI UI Router (`ios_ai_act` / `POST /api/ai/act`)**:
+     - *Tier-1 Zero-Output-Token Selector*: Uses OpenRouter `google/gemini-decision-1` (`OPENROUTER_API_KEY`) to score `noul` completion + candidate element choice in a single prefill pass.
+     - *Tier-2 Fast Non-Thinking LLM Planner*: Uses any OpenAI-compatible endpoint (`GROGU_LLM_BASE_URL`, `GROGU_LLM_API_KEY`, `GROGU_LLM_MODEL`) with configurable `GROGU_LLM_DISABLE_THINKING=true` (`chat_template_kwargs: {"enable_thinking": false}`) for sub-second JSON step selection and complex Siri `async_llm` tasks.
    - **Custom On-Device Patch (`wda_patch/`)**: Optional Objective-C `FBGroguCommands` extension adding `/grogu/fast_tree` and `/grogu/reflex` for sub-30ms on-device polling and tap synthesis.
 3. **Deep System Telemetry (`ios_lowlevel_telemetry` / `GET /api/telemetry/{kind}`)**
    - `summary`: Device identity, Developer Mode status, battery, running apps.
