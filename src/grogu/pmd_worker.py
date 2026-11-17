@@ -92,6 +92,17 @@ def _load_device_meta() -> dict[str, Any]:
     return {}
 
 
+def _save_fw_relpath(fw_rel: str) -> None:
+    meta_path = STATE_DIR / "device.json"
+    meta = _load_device_meta()
+    if meta.get("xctest_framework_relpath") == fw_rel:
+        return
+    meta["xctest_framework_relpath"] = fw_rel
+    with suppress(Exception):
+        meta_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _find_pairing_records() -> dict[str, Any]:
     meta = _load_device_meta()
     udid = meta.get("udid")
@@ -886,7 +897,7 @@ async def cmd_daemon(
             self._emit_log(message)
 
     async def _xctest_supervisor() -> None:
-        preferred_fw_rel: Optional[str] = None
+        preferred_fw_rel: Optional[str] = str(_load_device_meta().get("xctest_framework_relpath") or "").strip() or None
         while True:
             bundle = await _resolve_wda_bundle_id(rsd, wda_bundle)
             listener = _QuietListener()
@@ -930,14 +941,18 @@ async def cmd_daemon(
                             if fw_listener.bootstrap_error:
                                 raise RuntimeError(fw_listener.bootstrap_error)
                             preferred_fw_rel = fw_rel
+                            _save_fw_relpath(fw_rel)
                             print("[wda] Frameworks WDA exited cleanly; restarting in 6s", file=sys.stderr, flush=True)
                             await asyncio.sleep(6.0)
                             continue
                         except asyncio.CancelledError:
+                            if fw_listener.bootstrap_error is None:
+                                _save_fw_relpath(fw_rel)
                             raise
                         except Exception as fw_exc:
                             if fw_listener.bootstrap_error is None:
                                 preferred_fw_rel = fw_rel
+                                _save_fw_relpath(fw_rel)
                                 print(
                                     f"[wda] Frameworks WDA disconnected ({fw_exc}); retrying {fw_rel} in 6s",
                                     file=sys.stderr,

@@ -16,7 +16,7 @@ from starlette.responses import FileResponse, JSONResponse, PlainTextResponse
 from starlette.routing import Route
 import uvicorn
 
-from grogu.config import BIND_HOST, GATEWAY_PORT, SSH_PUBKEY_PATH, STATE_DIR
+from grogu.config import BIND_HOST, GATEWAY_PORT, OUTPUT_DIR, SSH_PUBKEY_PATH, STATE_DIR
 from grogu.core import GroguCoreManager
 from grogu.decision_engine import DecisionEngine
 from grogu.wda_client import FastWDAClient
@@ -125,8 +125,27 @@ async def ai_act(request: Request) -> JSONResponse:
         goal = str(body["goal"]).strip()
         max_steps = int(body.get("max_steps", 6))
         prefer = str(body.get("prefer", "auto"))
-        res = await engine.run_ai_goal(goal, max_steps=max_steps, prefer=prefer)
+        verify_final = bool(body.get("verify_final", False))
+        res = await engine.run_ai_goal(goal, max_steps=max_steps, prefer=prefer, verify_final=verify_final)
         return JSONResponse(res, status_code=200 if res.get("ok") else 500)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+async def screenshot_api(request: Request):
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = OUTPUT_DIR / "latest_screenshot.png"
+    try:
+        try:
+            res = await wda.screenshot(out_path)
+        except Exception:
+            res = await core.get_telemetry("screenshot", out_path=str(out_path))
+        if not res.get("ok") or not out_path.exists():
+            return JSONResponse(
+                {"ok": False, "error": res.get("error") or "Failed to capture screenshot"},
+                status_code=500,
+            )
+        return FileResponse(out_path, media_type="image/png", filename="screenshot.png")
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
@@ -302,6 +321,7 @@ app = Starlette(
         Route("/api/decision/execute", decision_execute, methods=["POST"]),
         Route("/api/ai/act", ai_act, methods=["POST"]),
         Route("/api/ui/dump", ui_dump, methods=["GET"]),
+        Route("/api/screenshot", screenshot_api, methods=["GET"]),
         Route("/api/telemetry/{kind}", telemetry, methods=["GET"]),
         Route("/bootstrap/mac.sh", bootstrap_mac_script, methods=["GET"]),
         Route("/bootstrap/upload-pairing", bootstrap_upload_pairing, methods=["POST"]),

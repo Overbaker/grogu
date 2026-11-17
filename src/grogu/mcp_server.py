@@ -110,9 +110,9 @@ async def ios_decision_run(steps_json: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def ios_ai_act(goal: str, max_steps: int = 6, prefer: str = "auto") -> dict[str, Any]:
+async def ios_ai_act(goal: str, max_steps: int = 6, prefer: str = "auto", verify_final: bool = False) -> dict[str, Any]:
     """Execute a multi-step natural-language iOS/iPadOS UI goal via Decision-1 + fast LLM routing."""
-    return await _engine.run_ai_goal(goal, max_steps=max_steps, prefer=prefer)
+    return await _engine.run_ai_goal(goal, max_steps=max_steps, prefer=prefer, verify_final=verify_final)
 
 
 @mcp.tool()

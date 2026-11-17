@@ -510,6 +510,14 @@ class DecisionEngine:
                     "instructions": f"Goal: {goal}. Select the single best UI element to tap or navigation action to perform next.",
                     "criteria": criteria,
                 },
+                "is_final_action": {
+                    "type": "noul",
+                    "instructions": "Determine whether executing next_action will completely fulfill the user's goal with no further clicks, typing, or navigation needed afterwards.",
+                    "criteria": {
+                        "true": "Clicking the selected target element directly reaches the requested page or final state.",
+                        "false": "More steps are still required after executing next_action.",
+                    },
+                },
             },
         }
         resp = await self._http.post(
@@ -547,13 +555,16 @@ class DecisionEngine:
                 step = {"op": "tap", "x": int(center[0]), "y": int(center[1])}
             else:
                 step = {"op": "tap_selector", "text": str(matched.get("label") or matched.get("name") or "")}
+            fa = answers.get("is_final_action") or {}
+            final_prob = float(fa.get("noul") or 0.0)
             return {
-                "done": False,
+                "done": final_prob >= 0.80,
                 "reason": f"Selected {choice}",
                 "engine": model,
                 "choice": choice,
                 "confidence": na.get("confidence"),
                 "probability": probs.get(choice),
+                "final_noul": final_prob,
                 "matched": matched,
                 "steps": [step],
             }
@@ -626,7 +637,8 @@ class DecisionEngine:
             "type(text,submit), button(name: home). "
             "Note: to scroll down the list/page use swipe(direction='up'). "
             "On split-view apps (e.g. iPad Settings), left sidebar items (x<300) remain directly tappable — tap the target sidebar Button directly instead of NavigationBar headers. "
-            "Set done=true and steps=[] ONLY when history and visible UI confirm the goal screen is already reached."
+            "If visible UI already satisfies the goal with no action needed, set done=true, tap_index=null, steps=[]. "
+            "If tapping tap_index (or executing steps) is the FINAL action needed to fulfill the goal (e.g. clicking the target visible button/menu/tab directly), set BOTH tap_index (or steps) AND done=true so execution finishes in 1 step; set done=false ONLY when further steps are still needed afterwards (e.g. launching an app before navigating inside it, or scrolling to find an off-screen item)."
         )
         req_body: dict[str, Any] = {
             "model": use_model,
@@ -679,6 +691,7 @@ class DecisionEngine:
         max_steps: int = 6,
         prefer: str = "auto",
         *,
+        verify_final: bool = False,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
@@ -760,7 +773,7 @@ class DecisionEngine:
                     "total_latency_ms": round((time.perf_counter() - t_total0) * 1000, 1),
                     "trace": trace,
                 }
-            if plan.get("done"):
+            if plan.get("done") and not verify_final:
                 return {
                     "ok": True,
                     "goal": goal,
