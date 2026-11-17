@@ -865,21 +865,38 @@ async def cmd_daemon(
             self.bootstrap_error = _format_nserror(error)
             print(f"[wda] ui_testing_init_failed: {self.bootstrap_error}", file=sys.stderr, flush=True)
 
-        async def log_message(self, message: str) -> None:
+        def _emit_log(self, message: str) -> None:
             low = message.lower()
-            if "serverurlhere" in low or "listening" in low or "error" in low or "fail" in low:
+            if any(tok in low for tok in ("serverurlhere", "listening", "didfail", "error", "fail")):
                 print(f"[wda] {message}", file=sys.stderr, flush=True)
 
+        async def log_message(self, message: str) -> None:
+            self._emit_log(message)
+
+        async def log_debug_message(self, message: str) -> None:
+            self._emit_log(message)
+
     async def _xctest_supervisor() -> None:
+        preferred_fw_rel: Optional[str] = None
         while True:
             bundle = await _resolve_wda_bundle_id(rsd, wda_bundle)
             listener = _QuietListener()
             base_cfg: Optional[TestConfig] = None
             _update_status_file(STATUS_FILE, {"xctest_error": None, "wda_bundle": bundle})
             try:
-                print(f"[wda] starting XCUITestService for {bundle}", file=sys.stderr, flush=True)
                 base_cfg = await TestConfig.create_for(rsd, runner_bundle_id=bundle)
-                await XCUITestService(rsd).run(base_cfg, listener=listener)
+                if preferred_fw_rel:
+                    run_cfg: TestConfig = _FlexibleTestConfig(
+                        runner_app_info=base_cfg.runner_app_info,
+                        runner_app_env=base_cfg.runner_app_env,
+                        runner_app_args=base_cfg.runner_app_args,
+                        bundle_relpath=preferred_fw_rel,
+                    )
+                    print(f"[wda] starting XCUITestService for {bundle} ({preferred_fw_rel})", file=sys.stderr, flush=True)
+                else:
+                    run_cfg = base_cfg
+                    print(f"[wda] starting XCUITestService for {bundle}", file=sys.stderr, flush=True)
+                await XCUITestService(rsd).run(run_cfg, listener=listener)
                 if listener.bootstrap_error:
                     raise RuntimeError(listener.bootstrap_error)
                 print("[wda] XCUITestService exited cleanly; restarting in 6s", file=sys.stderr, flush=True)
@@ -887,7 +904,7 @@ async def cmd_daemon(
                 raise
             except Exception as exc:
                 err_msg = listener.bootstrap_error or str(exc)
-                if listener.bootstrap_error and base_cfg is not None:
+                if listener.bootstrap_error and base_cfg is not None and not preferred_fw_rel:
                     exec_name = str(base_cfg.runner_app_info.get("CFBundleExecutable") or "")
                     if exec_name.endswith("-Runner"):
                         fw_rel = f"Frameworks/{exec_name[:-len('-Runner')]}.framework"
@@ -903,17 +920,36 @@ async def cmd_daemon(
                             await XCUITestService(rsd).run(fw_cfg, listener=fw_listener)
                             if fw_listener.bootstrap_error:
                                 raise RuntimeError(fw_listener.bootstrap_error)
+                            preferred_fw_rel = fw_rel
                             print("[wda] Frameworks WDA exited cleanly; restarting in 6s", file=sys.stderr, flush=True)
                             await asyncio.sleep(6.0)
                             continue
                         except asyncio.CancelledError:
                             raise
                         except Exception as fw_exc:
-                            err_msg = fw_listener.bootstrap_error or str(fw_exc)
+                            if fw_listener.bootstrap_error is None:
+                                preferred_fw_rel = fw_rel
+                                print(
+                                    f"[wda] Frameworks WDA disconnected ({fw_exc}); retrying {fw_rel} in 6s",
+                                    file=sys.stderr,
+                                    flush=True,
+                                )
+                                await asyncio.sleep(6.0)
+                                continue
+                            err_msg = fw_listener.bootstrap_error
                     _update_status_file(STATUS_FILE, {"xctest_error": err_msg})
                     print(
                         f"[wda] Both .xctest and .framework bootstrap failed ({err_msg}). "
                         "Build & install a repackaged IPA via `grogu-prepare-wda-ipa`, then restart grogu-worker; "
+                        "keeping telemetry RPC and WDA port relay alive.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return
+                elif listener.bootstrap_error and preferred_fw_rel:
+                    _update_status_file(STATUS_FILE, {"xctest_error": err_msg})
+                    print(
+                        f"[wda] Bootstrap failed on {preferred_fw_rel} ({err_msg}); "
                         "keeping telemetry RPC and WDA port relay alive.",
                         file=sys.stderr,
                         flush=True,
