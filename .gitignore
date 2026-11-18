@@ -21,7 +21,9 @@ rsd_daemon.json
 
 # Native iOS/iPadOS workspace
 ios/build/
-ios/release/
+!ios/release/
+ios/release/*
+!ios/release/*.ipa
 ios/Grogu.xcodeproj/
 ios/Frameworks/
 ios/Config/Local.xcconfig

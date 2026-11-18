@@ -120,7 +120,9 @@ Grogu also ships a standalone, zero-VM pure Swift 6 + Objective-C XCUITest nativ
   - **MCP Client**: Connect Grogu on-device to any remote Streamable HTTP MCP server (`tools/list`, cursor pagination, SSE + JSON responses, `tools/call`).
 - **Jetsam-Safe Memory & Thermal Discipline**: Live `task_vm_info` + `os_proc_available_memory()` monitoring, bounded ring buffers, streaming DDI downloads, `autoreleasepool` frame capture, and on-demand silent audio keep-alive only while an active task runs.
 
-Build unsigned ad-hoc IPAs cleanly on macOS with Xcode 16 + XcodeGen (`ios/`):
+Prebuilt unsigned ad-hoc IPAs are checked directly into [`ios/release/`](ios/release/) (`GroguApp.ipa`, `GroguRunner.ipa`, `GroguRunner-sideload.ipa`) and published on [GitHub Releases](https://github.com/Overbaker/grogu/releases/latest) (sign & install with SideStore, AltStore, Impactor, or Xcode).
+
+Or build from source on macOS with Xcode 16 + XcodeGen (`ios/`):
 ```bash
 cd ios
 make ipa UNSIGNED=1
