@@ -1,0 +1,52 @@
+name: iOS Native Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ios/**"
+      - "src/grogu/prepare_sideload_ipa.py"
+      - ".github/workflows/ios-build.yml"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 16
+        run: |
+          if [ -d /Applications/Xcode_16.2.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.2.app
+          elif [ -d /Applications/Xcode_16.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.app
+          fi
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Cache IDevice.xcframework
+        uses: actions/cache@v4
+        with:
+          path: ios/Frameworks/IDevice.xcframework
+          key: idevice-v0.1.68-arm64
+
+      - name: Build & Package Unsigned Ad-Hoc IPAs
+        run: |
+          cd ios
+          make ipa UNSIGNED=1
+          ls -lh release/
+
+      - name: Upload Native iOS IPA Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: grogu-ios-native-ipas
+          path: |
+            ios/release/GroguApp.ipa
+            ios/release/GroguRunner.ipa
+            ios/release/GroguRunner-sideload.ipa
+          if-no-files-found: error

@@ -89,7 +89,7 @@ grogu-prepare-wda-ipa --download -o ~/.config/grogu/WebDriverAgentRunner-sideloa
 GROGU_DEVICE_IP=100.64.0.10 grogu-worker daemon
 ```
 
-### 4. Register as an MCP Server
+### 4. Register as an MCP Server (Linux Gateway)
 Add to your MCP client configuration (e.g. `mcp_config.json`):
 ```json
 {
@@ -108,6 +108,30 @@ Add to your MCP client configuration (e.g. `mcp_config.json`):
 
 ---
 
+## Native On-Device iOS / iPadOS App (`ios/`)
+
+Grogu also ships a standalone, zero-VM pure Swift 6 + Objective-C XCUITest native app (`ios/GroguApp` + `ios/GroguRunner`) so the entire agent, local OS tools, GUI engine, and **bidirectional Streamable HTTP MCP Server & Client** run directly on-device:
+
+- **Native-First OS Agent**: Executes `device_info`, `clipboard_*`, `calendar_*`, `reminders_*`, `contacts_search`, `location_get`, `photos_list_recent`, `notification_post`, `url_open`, `shortcut_run`, and bounded `http_fetch` before falling back to GUI automation.
+- **Ultra-Fast `GroguRunner` (`127.0.0.1:18831`)**: Adapts [OpenMinis/iCTRL](https://github.com/OpenMinis/iCTRL) (Apache-2.0) quiescence/screen-recording suppression, synthesized HID gestures (`~50ms`), bounded viewport Accessibility snapshots, and `Vision` OCR fallback (~1–2 MB Runner IPA).
+- **Mac-Free On-Device DDI Mount**: Uses [jkcoxson/idevice](https://github.com/jkcoxson/idevice) (MIT) + `LocalDevVPN` (`10.7.0.1:49152`) to mount Personalized & Cryptex (`iOS 26.4+`) Developer Disk Images directly from the iPhone/iPad.
+- **Bidirectional MCP (`2025-03-26` Streamable HTTP)**:
+  - **MCP Server (`:18832/mcp`)**: Expose on-device native OS tools, GUI automation, `grogu://*` resources, and `grogu_agent_run` to Antigravity / Claude Code / Eta / Cursor over loopback or Tailscale/LAN with Keychain-stored Bearer token auth.
+  - **MCP Client**: Connect Grogu on-device to any remote Streamable HTTP MCP server (`tools/list`, cursor pagination, SSE + JSON responses, `tools/call`).
+- **Jetsam-Safe Memory & Thermal Discipline**: Live `task_vm_info` + `os_proc_available_memory()` monitoring, bounded ring buffers, streaming DDI downloads, `autoreleasepool` frame capture, and on-demand silent audio keep-alive only while an active task runs.
+
+Build unsigned ad-hoc IPAs cleanly on macOS with Xcode 16 + XcodeGen (`ios/`):
+```bash
+cd ios
+make ipa UNSIGNED=1
+# Outputs release/GroguApp.ipa, release/GroguRunner.ipa, release/GroguRunner-sideload.ipa
+```
+
+See [ios/NOTICE](ios/NOTICE) for third-party attributions (`iCTRL` Apache-2.0, `idevice` MIT).
+
+---
+
 ## License
 
-MIT © 2026 [Overbaker](https://github.com/Overbaker)
+Root Python gateway & tooling: MIT © 2026 [Overbaker](https://github.com/Overbaker).  
+Native `ios/` targets (`GroguApp` & `GroguRunner`): Apache License 2.0 (see [ios/NOTICE](ios/NOTICE)).

@@ -1,0 +1,18 @@
+# Third-Party Components and Licensing
+
+Grogu iOS (`ios/`) is licensed under the Apache License, Version 2.0.
+
+Zero GPL or AGPL source code is included or copied in this repository.
+
+## Components Used or Adapted
+
+| Component | Upstream | License | Purpose |
+|---|---|---|---|
+| `iCTRL` | [OpenMinis/iCTRL](https://github.com/OpenMinis/iCTRL) | Apache-2.0 | Low-level XCUITest quiescence/recording suppression, synthesized HID event primitives, Obj-C exception boundary wrappers, bounded AX snapshots, XCTRunner compat shim scripts, and on-device DDI mount sequencing (`DDIMounter`, `DeveloperDiskImageStore`, `PairingFileStore`, `LocalDevVPN`). |
+| `idevice` | [jkcoxson/idevice](https://github.com/jkcoxson/idevice) | MIT | Pure-Rust RemotePairing tunnel, lockdownd, image_mounter, and cryptexd client shipped as `IDevice.xcframework` (fetched dynamically at build time via `ios/Scripts/fetch-idevice.sh`). |
+
+## Architectural References (No Code Copied)
+
+- **Model Context Protocol (MCP)**: Clean-room implementation of the Streamable HTTP (`2025-03-26` / `2025-11-25`) client and server transport over Apple's native `Network.framework` (`NWListener`) and `URLSession`.
+- **Android Eta / Agent Design**: Native-first OS tool routing before GUI fallback, strict bounded memory/log governance, and queue/steer loop control.
+- **Developer Disk Images**: Downloaded on-device at runtime from [doronz88/DeveloperDiskImage](https://github.com/doronz88/DeveloperDiskImage) or imported manually from Xcode.

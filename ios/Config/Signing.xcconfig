@@ -1,0 +1,4 @@
+DEVELOPMENT_TEAM =
+GROGU_BUNDLE_PREFIX = dev.grogu
+
+#include? "Local.xcconfig"

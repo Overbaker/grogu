@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>dev.grogu.app</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>grogu</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>RemotePairing File</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>dev.grogu.pairing-record</string>
+				<string>com.apple.property-list</string>
+				<string>public.xml</string>
+			</array>
+		</dict>
+	</array>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>dev.grogu.pairing-record</string>
+			<key>UTTypeDescription</key>
+			<string>Device Pairing Record</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>com.apple.property-list</string>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>mobiledevicepairing</string>
+					<string>mobiledevicepair</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<false/>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>grogu-runner</string>
+		<string>localdevvpn</string>
+		<string>stikdebug</string>
+		<string>shortcuts</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Grogu connects to LocalDevVPN to mount the Developer Disk Image and serves the on-device MCP endpoint on your LAN/Tailscale.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Grogu reads and creates calendar events natively when requested by your agent or MCP tools.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Grogu reads and creates calendar events natively when requested by your agent or MCP tools.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>Grogu lists and creates reminders natively when requested by your agent or MCP tools.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Grogu lists and creates reminders natively when requested by your agent or MCP tools.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Grogu searches contacts natively when requested by your agent or MCP tools.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Grogu provides current device coordinates natively when requested by your agent or MCP tools.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Grogu inspects recent photo metadata natively when requested by your agent or MCP tools.</string>
+</dict>
+</plist>

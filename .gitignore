@@ -18,3 +18,13 @@ device.json
 daemon.pid
 rsd_daemon.json
 .DS_Store
+
+# Native iOS/iPadOS workspace
+ios/build/
+ios/release/
+ios/Grogu.xcodeproj/
+ios/Frameworks/
+ios/Config/Local.xcconfig
+!ios/GroguApp/Info.plist
+!ios/Config/RunnerIcon/*.png
+!ios/GroguApp/Assets.xcassets/**/*.png
