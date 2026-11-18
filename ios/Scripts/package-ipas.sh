@@ -9,6 +9,7 @@ IOS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$IOS_ROOT/.." && pwd)"
 OUT_DIR="${1:-$IOS_ROOT/release}"
 mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
 adhoc_sign_ipa() {
     local src_ipa="$1"
