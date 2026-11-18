@@ -26,6 +26,7 @@ adhoc_sign_ipa() {
 
     find "$app" -name 'embedded.mobileprovision' -delete
     find "$app" -name '*.dSYM' -exec rm -rf {} + 2>/dev/null || true
+    find "$app" -name '_CodeSignature' -type d -exec rm -rf {} + 2>/dev/null || true
 
     local sign=(codesign --force --timestamp=none --sign -)
     while IFS= read -r f; do "${sign[@]}" "$f" 2>/dev/null; done \

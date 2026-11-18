@@ -68,7 +68,8 @@ ipa: build
 	@rmdir "$(BUILD_DIR)/$(RUNNER_APP)/Frameworks" 2>/dev/null || true
 	@set -e; \
 	APP="$(BUILD_DIR)/$(RUNNER_APP)"; \
-	if ! otool -L "$$APP/$(RUNNER_BIN)" | grep -q libXCTCompatShim; then \
+	if nm -u "$$APP/$(RUNNER_BIN)" 2>/dev/null | grep -q '_OBJC_CLASS_$$_XCTCommandLineToolHelper' && \
+	   ! otool -L "$$APP/$(RUNNER_BIN)" | grep -q libXCTCompatShim; then \
 		SDK="$$(xcrun --sdk iphoneos --show-sdk-path)"; \
 		mkdir -p "$$APP/Frameworks"; \
 		xcrun -sdk iphoneos clang -dynamiclib -arch arm64 -isysroot "$$SDK" \
@@ -77,11 +78,16 @@ ipa: build
 			Compat/XCTCompatShim.m; \
 		BIN="$$APP/$(RUNNER_BIN)"; TMP="$$BIN.patching"; \
 		cp "$$BIN" "$$TMP"; \
-		python3 Scripts/insert-dylib.py "$$TMP" "@rpath/libXCTCompatShim.dylib"; \
-		ORD="$$(python3 Scripts/dylib-ordinal.py "$$TMP" libXCTCompatShim)"; \
-		python3 Scripts/retarget-bind-ordinal.py "$$TMP" '_OBJC_CLASS_$$_XCTCommandLineToolHelper' "$$ORD"; \
-		python3 Scripts/retarget-undef-symbol.py "$$TMP" '_OBJC_CLASS_$$_XCTCommandLineToolHelper' libXCTCompatShim; \
-		mv "$$TMP" "$$BIN"; \
+		if python3 Scripts/insert-dylib.py "$$TMP" "@rpath/libXCTCompatShim.dylib" && \
+		   ORD="$$(python3 Scripts/dylib-ordinal.py "$$TMP" libXCTCompatShim)" && \
+		   python3 Scripts/retarget-bind-ordinal.py "$$TMP" '_OBJC_CLASS_$$_XCTCommandLineToolHelper' "$$ORD" && \
+		   python3 Scripts/retarget-undef-symbol.py "$$TMP" '_OBJC_CLASS_$$_XCTCommandLineToolHelper' libXCTCompatShim; then \
+			mv "$$TMP" "$$BIN"; \
+		else \
+			rm -f "$$TMP" "$$APP/Frameworks/libXCTCompatShim.dylib"; \
+			rmdir "$$APP/Frameworks" 2>/dev/null || true; \
+			echo "Skipping optional iOS 16 XCTCompatShim (not required for this XCTRunner stub)"; \
+		fi; \
 	fi
 	find "$(BUILD_DIR)/$(RUNNER_APP)" -name "*.dSYM" -exec rm -rf {} + 2>/dev/null || true
 	@PLIST="$(BUILD_DIR)/$(RUNNER_APP)/Info.plist"; \
