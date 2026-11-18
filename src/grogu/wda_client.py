@@ -157,7 +157,7 @@ class FastWDAClient:
                     "animationCoolOffTimeout": 0,
                     "waitForQuiescence": False,
                     "shouldUseCompactResponses": True,
-                    "snapshotMaxDepth": 16,
+                    "snapshotMaxDepth": 25,
                     "elementResponseAttributes": "type,label,name,value,rect,enabled,visible",
                 }
             },

@@ -235,7 +235,7 @@ async function ensureSid() {
   await fetch(WDA + '/session/' + sid + '/appium/settings', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({settings: {waitForIdleTimeout: 0, animationCoolOffTimeout: 0, waitForQuiescence: false, snapshotMaxDepth: 16}})
+    body: JSON.stringify({settings: {waitForIdleTimeout: 0, animationCoolOffTimeout: 0, waitForQuiescence: false, snapshotMaxDepth: 25}})
   }).catch(() => {});
   cachedSid = sid;
   return sid;

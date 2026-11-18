@@ -668,6 +668,7 @@ class DecisionEngine:
         if not use_base or not use_key:
             raise RuntimeError("No LLM endpoint/key configured (set GROGU_LLM_BASE_URL & GROGU_LLM_API_KEY)")
 
+        fg_app = ""
         compact_ui: list[dict[str, Any]] = []
         el_by_index: dict[int, dict[str, Any]] = {}
         for pos, el in enumerate(elements):
@@ -677,7 +678,11 @@ class DecisionEngine:
             name = str(el.get("name") or "").strip()
             val = str(el.get("value") or "").strip()
             el_type = str(el.get("type") or "")
-            if not (lbl or name or val) and el_type in ("Cell", "Other", "CollectionView", "Window", "Application"):
+            if el_type == "Application" and (lbl or name):
+                fg_app = lbl or name
+            if el_type in ("Application", "Window"):
+                continue
+            if not (lbl or name or val) and el_type in ("Cell", "Other", "CollectionView"):
                 continue
             item: dict[str, Any] = {"i": idx, "t": el_type}
             if lbl:
@@ -714,7 +719,7 @@ class DecisionEngine:
                 {
                     "role": "user",
                     "content": json.dumps(
-                        {"goal": goal, "history": history[-6:], "ui": compact_ui},
+                        {"goal": goal, "foreground_app": fg_app, "history": history[-6:], "ui": compact_ui},
                         ensure_ascii=False,
                     ),
                 },

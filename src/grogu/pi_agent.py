@@ -148,13 +148,18 @@ class PiRpcAgent:
         dump_ms: float = 0.0,
         max_steps: int = 6,
     ) -> dict[str, Any]:
+        fg_app = ""
         compact_ui: list[dict[str, Any]] = []
         for pos, el in enumerate(elements):
             lbl = str(el.get("label") or "").strip()
             name = str(el.get("name") or "").strip()
             val = str(el.get("value") or "").strip()
             el_type = str(el.get("type") or "")
-            if not (lbl or name or val) and el_type in ("Cell", "Other", "CollectionView", "Window", "Application"):
+            if el_type == "Application" and (lbl or name):
+                fg_app = lbl or name
+            if el_type in ("Application", "Window"):
+                continue
+            if not (lbl or name or val) and el_type in ("Cell", "Other", "CollectionView"):
                 continue
             item: dict[str, Any] = {"i": int(el.get("index", pos)), "t": el_type}
             if lbl:
@@ -171,7 +176,8 @@ class PiRpcAgent:
 
         prompt_msg = (
             f"Goal: {goal}\n"
-            "Rules:\n"
+            + (f"Foreground App: {fg_app}\n" if fg_app else "")
+            + "Rules:\n"
             "- Execute via the provided ios_* tools (prefer ios_tap(x, y) using c=[x,y] from UI below).\n"
             "- On split-view apps (e.g. iPad Settings), left sidebar items (x<300) remain directly tappable.\n"
             "- If a single tool call completely fulfills the goal, reply DONE right after the tool succeeds without calling ios_ui_dump again.\n"
