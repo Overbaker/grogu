@@ -17,13 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode 16
+      - name: Check Xcode Version
         run: |
-          if [ -d /Applications/Xcode_16.2.app ]; then
-            sudo xcode-select -s /Applications/Xcode_16.2.app
-          elif [ -d /Applications/Xcode_16.app ]; then
-            sudo xcode-select -s /Applications/Xcode_16.app
-          fi
+          xcode-select -p
           xcodebuild -version
 
       - name: Install XcodeGen

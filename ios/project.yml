@@ -56,6 +56,7 @@ targets:
         TEST_HOST: ""
     postBuildScripts:
       - name: "Strip unnecessary XCTest frameworks"
+        basedOnDependencyAnalysis: false
         script: |
           RUNNER_APP="${BUILT_PRODUCTS_DIR}/GroguRunner-Runner.app"
           echo "Stripping bloat XCTest frameworks from ${RUNNER_APP}..."
