@@ -172,11 +172,13 @@ class DecisionEngine:
         step_results: list[dict[str, Any]] = []
 
         for idx, step in enumerate(steps):
-            op = str(step.get("op") or step.get("action") or "").strip().lower()
+            op = str(step.get("op") or step.get("action") or "").strip().lower().split("(", 1)[0].strip()
             s_t0 = time.perf_counter()
             try:
                 if op == "launch":
-                    target = str(step.get("app") or step.get("bundle_id") or "")
+                    target = str(
+                        step.get("app") or step.get("bundle_id") or step.get("text") or step.get("name") or ""
+                    )
                     kind, resolved = self.resolve_target(target)
                     if kind == "url":
                         res = await self._open_url_with_fallback(resolved)
@@ -694,10 +696,11 @@ class DecisionEngine:
             "You control an iOS/iPadOS device via Grogu JSON Decision API. Given goal, compact indexed UI elements "
             "(i=index, t=type, l=label, n=name, v=value, c=[x,y]), and history, output ONLY raw JSON: "
             "{\"done\": bool, \"reason\": str, \"tap_index\": int|null, \"steps\": [{\"op\": ...}]}. "
-            "Set tap_index (preferred for clicking a listed element) OR steps using allowed ops: "
-            "launch(app), open_url(url), tap(x,y), tap_selector(text), swipe(direction: up|down|left|right), "
-            "type(text,submit), button(name: home). "
-            "Note: to scroll down the list/page use swipe(direction='up'). "
+            "Set tap_index (preferred for clicking a listed element) OR steps using valid JSON step objects: "
+            '{"op":"launch","app":"settings"}, {"op":"open_url","url":"..."}, {"op":"tap","x":150,"y":600}, '
+            '{"op":"tap_selector","text":"..."}, {"op":"swipe","direction":"up|down|left|right"}, '
+            '{"op":"type","text":"...","submit":true}, {"op":"button","name":"home"}. '
+            "Never put parentheses in 'op'. Note: to scroll down the list/page use {\"op\":\"swipe\",\"direction\":\"up\"}. "
             "On split-view apps (e.g. iPad Settings), left sidebar items (x<300) remain directly tappable — tap the target sidebar Button directly instead of NavigationBar headers. "
             "If visible UI already satisfies the goal with no action needed, set done=true, tap_index=null, steps=[]. "
             "If tapping tap_index (or executing steps) is the FINAL action needed to fulfill the goal (e.g. clicking the target visible button/menu/tab directly), set BOTH tap_index (or steps) AND done=true so execution finishes in 1 step; set done=false ONLY when further steps are still needed afterwards (e.g. launching an app before navigating inside it, or scrolling to find an off-screen item)."
