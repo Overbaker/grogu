@@ -7,12 +7,13 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import json
+import time
 from typing import Any
 import uuid
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, PlainTextResponse
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.routing import Route
 import uvicorn
 
@@ -57,20 +58,24 @@ async def health(request: Request) -> JSONResponse:
 
 async def siri_command(request: Request) -> JSONResponse:
     text = ""
+    agent = "auto"
     ct = request.headers.get("content-type", "")
     try:
         if "application/json" in ct:
             body = await request.json()
             if isinstance(body, dict):
                 text = str(body.get("text") or body.get("command") or body.get("query") or "")
+                agent = str(body.get("agent") or body.get("prefer") or "auto")
         elif "form" in ct:
             form = await request.form()
             text = str(form.get("text") or form.get("command") or "")
+            agent = str(form.get("agent") or form.get("prefer") or "auto")
         else:
             raw = (await request.body()).decode("utf-8", errors="replace").strip()
             if raw.startswith("{"):
                 body = json.loads(raw)
                 text = str(body.get("text") or body.get("command") or "")
+                agent = str(body.get("agent") or body.get("prefer") or "auto")
             else:
                 text = raw
     except Exception as exc:
@@ -96,7 +101,7 @@ async def siri_command(request: Request) -> JSONResponse:
         return JSONResponse({"ok": True, "mode": "sync_query", "speak": answer})
 
     task_id = uuid.uuid4().hex[:10]
-    asyncio.create_task(engine.run_async_voice_task(task_id, mode, payload, text))
+    asyncio.create_task(engine.run_async_voice_task(task_id, mode, payload, text, agent=agent))
     return JSONResponse({"ok": True, "mode": mode, "task_id": task_id, "speak": spoken_ack})
 
 
@@ -124,12 +129,202 @@ async def ai_act(request: Request) -> JSONResponse:
             return JSONResponse({"ok": False, "error": "Request JSON must include non-empty 'goal'"}, status_code=400)
         goal = str(body["goal"]).strip()
         max_steps = int(body.get("max_steps", 6))
-        prefer = str(body.get("prefer", "auto"))
+        prefer = str(body.get("agent") or body.get("prefer") or "auto")
         verify_final = bool(body.get("verify_final", False))
-        res = await engine.run_ai_goal(goal, max_steps=max_steps, prefer=prefer, verify_final=verify_final)
+        async_tap = bool(body.get("async_tap", False))
+        res = await engine.run_ai_goal(
+            goal, max_steps=max_steps, prefer=prefer, verify_final=verify_final, async_tap=async_tap
+        )
         return JSONResponse(res, status_code=200 if res.get("ok") else 500)
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+async def ai_plan(request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+        if not isinstance(body, dict) or not str(body.get("goal", "")).strip():
+            return JSONResponse({"ok": False, "error": "Request JSON must include non-empty 'goal'"}, status_code=400)
+        goal = str(body["goal"]).strip()
+        elements = body.get("elements") if isinstance(body.get("elements"), list) else []
+        history = [str(x) for x in (body.get("history") or [])]
+        prefer = str(body.get("agent") or body.get("prefer") or "auto")
+        t0 = time.perf_counter()
+        plan = await engine.plan_step_auto(goal, elements, history, prefer=prefer)
+        return JSONResponse(
+            {
+                "ok": True,
+                "ai_ms": round((time.perf_counter() - t0) * 1000, 1),
+                "plan": plan,
+            }
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+async def ai_config(request: Request) -> JSONResponse:
+    try:
+        if request.method == "GET":
+            return JSONResponse({"ok": True, "ai_engines": engine.get_ai_engine_status()})
+        body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "error": "Request JSON must be an object"}, status_code=400)
+        res = await engine.set_ai_config(
+            default_agent=body.get("default_agent"),
+            pi_provider=body.get("pi_provider"),
+            pi_model=body.get("pi_model"),
+            pi_thinking=body.get("pi_thinking"),
+        )
+        return JSONResponse({"ok": True, "ai_engines": res})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+_IPAD_LOCAL_RUNNER_HTML = """<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+<title>Grogu On-Device 127.0.0.1 Runner</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 16px; background: #0f172a; color: #e2e8f0; }
+  .card { background: #1e293b; border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+  input, button { font-size: 16px; border-radius: 8px; border: 1px solid #334155; padding: 10px 12px; }
+  input { width: 100%; box-sizing: border-box; background: #0f172a; color: #f8fafc; margin-bottom: 10px; }
+  button { background: #2563eb; color: #fff; border: none; font-weight: 600; cursor: pointer; margin: 4px 6px 4px 0; }
+  button.sec { background: #334155; font-size: 14px; padding: 8px 10px; }
+  pre { background: #020617; padding: 10px; border-radius: 8px; overflow-x: auto; font-size: 13px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h3 style="margin:0 0 8px">Grogu iPad 本机回环 Runner (127.0.0.1:8100)</h3>
+    <div style="font-size:13px;color:#94a3b8;margin-bottom:10px">读屏 &amp; 触控均走本机回环，AI 规划走 /api/ai/plan</div>
+    <input id="goal" placeholder="输入指令，如：在设置里点开电池页面" />
+    <button onclick="runGoal()">执行本机闭环</button>
+    <div style="margin-top:8px">
+      <button class="sec" onclick="quick('在设置里点开电池页面')">电池</button>
+      <button class="sec" onclick="quick('在设置里点开通用页面')">通用</button>
+      <button class="sec" onclick="quick('在设置里点开蓝牙页面')">蓝牙</button>
+      <button class="sec" onclick="quick('在设置里点开无线局域网页面')">Wi-Fi</button>
+    </div>
+  </div>
+  <div class="card">
+    <div id="metrics" style="font-weight:600;margin-bottom:8px">待命</div>
+    <pre id="log">等待执行...</pre>
+  </div>
+<script>
+const WDA = 'http://127.0.0.1:8100';
+const INTERACTIVE = new Set(['Button','TextField','SecureTextField','SearchField','Cell','Switch','Link','Tab','Slider','TextView']);
+let cachedSid = null;
+
+function quick(g) { document.getElementById('goal').value = g; runGoal(); }
+
+async function ensureSid() {
+  if (cachedSid) return cachedSid;
+  const st = await (await fetch(WDA + '/status')).json();
+  let sid = st.sessionId || (st.value && st.value.sessionId);
+  if (!sid) {
+    const cr = await (await fetch(WDA + '/session', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({capabilities: {alwaysMatch: {}}, desiredCapabilities: {}})
+    })).json();
+    sid = cr.sessionId || (cr.value && cr.value.sessionId);
+  }
+  await fetch(WDA + '/session/' + sid + '/appium/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({settings: {waitForIdleTimeout: 0, animationCoolOffTimeout: 0, waitForQuiescence: false, snapshotMaxDepth: 16}})
+  }).catch(() => {});
+  cachedSid = sid;
+  return sid;
+}
+
+function parseXmlElements(xmlText, maxEl = 160) {
+  const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+  const all = doc.getElementsByTagName('*');
+  const out = [];
+  for (let i = 0; i < all.length && out.length < maxEl; i++) {
+    const el = all[i];
+    const t = el.tagName.replace(/^XCUIElementType/, '');
+    const label = (el.getAttribute('label') || '').trim();
+    const name = (el.getAttribute('name') || '').trim();
+    const value = (el.getAttribute('value') || '').trim();
+    const x = parseFloat(el.getAttribute('x') || '0') || 0;
+    const y = parseFloat(el.getAttribute('y') || '0') || 0;
+    const w = parseFloat(el.getAttribute('width') || '0') || 0;
+    const h = parseFloat(el.getAttribute('height') || '0') || 0;
+    const vis = (el.getAttribute('visible') || 'true').toLowerCase() !== 'false';
+    const hasTxt = Boolean(label || name || value);
+    if (w > 0 && h > 0 && (x + w) > 0 && (y + h) > 0 && y < 2200 && (hasTxt || INTERACTIVE.has(t)) && vis) {
+      if ((t !== 'Application' && t !== 'Window') || hasTxt) {
+        out.push({
+          index: out.length,
+          type: t, label, name, value,
+          center: [Math.round(x + w / 2), Math.round(y + h / 2)],
+        });
+      }
+    }
+  }
+  return out;
+}
+
+async function runGoal() {
+  const goal = document.getElementById('goal').value.trim();
+  if (!goal) return;
+  const logEl = document.getElementById('log');
+  const metEl = document.getElementById('metrics');
+  metEl.textContent = '执行中...';
+  try {
+    const t0 = performance.now();
+    const sid = await ensureSid();
+    const tD0 = performance.now();
+    const src = await (await fetch(WDA + '/source?excluded_attributes=visible,accessible')).json();
+    const elements = parseXmlElements(src.value || '');
+    const dumpMs = Math.round((performance.now() - tD0) * 10) / 10;
+
+    const tA0 = performance.now();
+    const planResp = await (await fetch('/api/ai/plan', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({goal, elements, history: []}),
+    })).json();
+    const aiMs = Math.round((performance.now() - tA0) * 10) / 10;
+
+    const steps = (planResp.plan && planResp.plan.steps) || [];
+    const tE0 = performance.now();
+    if (steps.length === 1 && steps[0].op === 'tap') {
+      const resp = await fetch(WDA + '/session/' + sid + '/wda/tap', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({x: steps[0].x, y: steps[0].y}),
+      });
+      if (resp.status === 404) { cachedSid = null; }
+    } else if (steps.length > 0) {
+      await fetch('/api/decision/execute', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({steps}),
+      });
+    }
+    const tapMs = Math.round((performance.now() - tE0) * 10) / 10;
+    const totalMs = Math.round((performance.now() - t0) * 10) / 10;
+    metEl.textContent = `总 ${totalMs}ms (本机读屏 ${dumpMs}ms + AI ${aiMs}ms + 本机点击 ${tapMs}ms)`;
+    logEl.textContent = JSON.stringify(planResp, null, 2);
+  } catch (err) {
+    metEl.textContent = '执行失败';
+    logEl.textContent = String(err);
+  }
+}
+</script>
+</body>
+</html>
+"""
+
+
+async def ipad_agent_page(request: Request) -> HTMLResponse:
+    return HTMLResponse(_IPAD_LOCAL_RUNNER_HTML)
 
 
 async def screenshot_api(request: Request):
@@ -320,6 +515,9 @@ app = Starlette(
         Route("/api/siri/tasks", siri_tasks, methods=["GET"]),
         Route("/api/decision/execute", decision_execute, methods=["POST"]),
         Route("/api/ai/act", ai_act, methods=["POST"]),
+        Route("/api/ai/plan", ai_plan, methods=["POST"]),
+        Route("/api/ai/config", ai_config, methods=["GET", "POST"]),
+        Route("/ipad-agent", ipad_agent_page, methods=["GET"]),
         Route("/api/ui/dump", ui_dump, methods=["GET"]),
         Route("/api/screenshot", screenshot_api, methods=["GET"]),
         Route("/api/telemetry/{kind}", telemetry, methods=["GET"]),

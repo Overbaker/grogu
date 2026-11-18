@@ -48,3 +48,6 @@ grogu-prepare-wda-ipa = "grogu.prepare_sideload_ipa:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+grogu = ["pi_ext/*.ts"]

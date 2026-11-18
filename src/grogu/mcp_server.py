@@ -110,9 +110,31 @@ async def ios_decision_run(steps_json: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def ios_ai_act(goal: str, max_steps: int = 6, prefer: str = "auto", verify_final: bool = False) -> dict[str, Any]:
-    """Execute a multi-step natural-language iOS/iPadOS UI goal via Decision-1 + fast LLM routing."""
-    return await _engine.run_ai_goal(goal, max_steps=max_steps, prefer=prefer, verify_final=verify_final)
+async def ios_ai_act(
+    goal: str,
+    max_steps: int = 6,
+    prefer: str = "auto",
+    verify_final: bool = False,
+    async_tap: bool = False,
+) -> dict[str, Any]:
+    """Execute a multi-step natural-language iOS/iPadOS UI goal using agent mode: auto, fast-llm, pi, or decision-1."""
+    return await _engine.run_ai_goal(
+        goal, max_steps=max_steps, prefer=prefer, verify_final=verify_final, async_tap=async_tap
+    )
+
+
+@mcp.tool()
+async def ios_ai_config(
+    default_agent: str = "",
+    pi_provider: str = "",
+    pi_model: str = "",
+) -> dict[str, Any]:
+    """Inspect or switch the active default AI agent engine (`auto`, `fast-llm`, `pi`, `decision-1`) or Pi RPC provider/model."""
+    return await _engine.set_ai_config(
+        default_agent=default_agent or None,
+        pi_provider=pi_provider or None,
+        pi_model=pi_model or None,
+    )
 
 
 @mcp.tool()

@@ -12,8 +12,9 @@ from typing import Any, Optional
 
 import httpx
 
-from grogu.config import OUTPUT_DIR, STATE_DIR
+from grogu.config import BIND_HOST, GATEWAY_PORT, OUTPUT_DIR, STATE_DIR
 from grogu.core import GroguCoreManager
+from grogu.pi_agent import PiRpcAgent
 from grogu.wda_client import FastWDAClient
 
 SIRI_LOG_FILE = OUTPUT_DIR / "siri_tasks.jsonl"
@@ -59,8 +60,14 @@ class DecisionEngine:
         self.core = core or GroguCoreManager()
         self.wda = wda or FastWDAClient(core=self.core)
         self._http = httpx.AsyncClient(timeout=20.0)
+        self._background_tasks: set[asyncio.Task[Any]] = set()
+        self.default_agent: str = (os.environ.get("GROGU_DEFAULT_AGENT") or "auto").strip().lower()
+        self.pi_agent = PiRpcAgent(gateway_url=f"http://{BIND_HOST}:{GATEWAY_PORT}")
 
     async def aclose(self) -> None:
+        for task in list(self._background_tasks):
+            task.cancel()
+        await self.pi_agent.aclose()
         await self._http.aclose()
 
     def resolve_target(self, app_or_url: str) -> tuple[str, str]:
@@ -433,12 +440,67 @@ class DecisionEngine:
         or_key, _, or_model = self._get_openrouter_config()
         llm_base, llm_key, llm_model, disable_thinking = self._get_llm_config()
         return {
+            "default_agent": self.default_agent,
+            "available_agents": ["auto", "fast-llm", "pi", "decision-1"],
             "decision_1_configured": bool(or_key),
             "decision_1_model": or_model,
             "fast_llm_configured": bool(llm_base and llm_key),
             "fast_llm_model": llm_model if (llm_base and llm_key) else "",
             "disable_thinking": disable_thinking,
+            "pi_agent": self.pi_agent.get_status(),
         }
+
+    async def set_ai_config(
+        self,
+        *,
+        default_agent: Optional[str] = None,
+        pi_provider: Optional[str] = None,
+        pi_model: Optional[str] = None,
+        pi_thinking: Optional[str] = None,
+    ) -> dict[str, Any]:
+        if default_agent is not None:
+            norm = default_agent.strip().lower()
+            if norm not in ("auto", "fast-llm", "llm", "pi", "decision-1"):
+                raise ValueError(f"Unsupported agent: {default_agent!r}")
+            self.default_agent = "fast-llm" if norm == "llm" else norm
+        if pi_provider is not None or pi_model is not None or pi_thinking is not None:
+            await self.pi_agent.reconfigure(
+                provider=pi_provider,
+                model=pi_model,
+                thinking=pi_thinking,
+            )
+        return self.get_ai_engine_status()
+
+    async def plan_step_auto(
+        self,
+        goal: str,
+        elements: list[dict[str, Any]],
+        history: list[str],
+        prefer: str = "auto",
+        *,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> dict[str, Any]:
+        or_key, _, _ = self._get_openrouter_config()
+        mode = (prefer or "auto").strip().lower()
+        if mode == "auto" and self.default_agent != "auto":
+            mode = self.default_agent
+        if mode in ("auto", "decision-1") and or_key and not base_url:
+            try:
+                plan = await self.decide_with_openrouter(goal, elements, history)
+                if plan is not None:
+                    return plan
+            except Exception:
+                pass
+        return await self.plan_step_with_fast_llm(
+            goal,
+            elements,
+            history,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+        )
 
     @staticmethod
     def _parse_json_object(raw_text: str) -> dict[str, Any]:
@@ -692,6 +754,7 @@ class DecisionEngine:
         prefer: str = "auto",
         *,
         verify_final: bool = False,
+        async_tap: bool = False,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
@@ -699,7 +762,20 @@ class DecisionEngine:
         t_total0 = time.perf_counter()
         trace: list[dict[str, Any]] = []
         history: list[str] = []
-        or_key, _, _ = self._get_openrouter_config()
+        mode = (prefer or "auto").strip().lower()
+        if mode == "auto" and self.default_agent != "auto":
+            mode = self.default_agent
+
+        if mode == "pi":
+            t_d0 = time.perf_counter()
+            dump = await self.wda.fast_ui_dump(compact=True, max_elements=160)
+            dump_ms = round((time.perf_counter() - t_d0) * 1000, 1)
+            return await self.pi_agent.run_goal(
+                goal,
+                dump.get("elements") or [],
+                dump_ms=dump_ms,
+                max_steps=max_steps,
+            )
 
         for step_idx in range(max(1, int(max_steps))):
             t_d0 = time.perf_counter()
@@ -707,22 +783,16 @@ class DecisionEngine:
             dump_ms = round((time.perf_counter() - t_d0) * 1000, 1)
             elements = dump.get("elements") or []
 
-            plan: Optional[dict[str, Any]] = None
             t_a0 = time.perf_counter()
-            if prefer in ("auto", "decision-1") and or_key and not base_url:
-                try:
-                    plan = await self.decide_with_openrouter(goal, elements, history)
-                except Exception:
-                    plan = None
-            if plan is None:
-                plan = await self.plan_step_with_fast_llm(
-                    goal,
-                    elements,
-                    history,
-                    base_url=base_url,
-                    api_key=api_key,
-                    model=model,
-                )
+            plan = await self.plan_step_auto(
+                goal,
+                elements,
+                history,
+                prefer=mode,
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+            )
             ai_ms = round((time.perf_counter() - t_a0) * 1000, 1)
 
             steps = plan.get("steps") or []
@@ -745,9 +815,23 @@ class DecisionEngine:
                     "trace": trace,
                 }
 
-            t_e0 = time.perf_counter()
-            exec_res = await self.execute_steps(steps) if steps else {"ok": True, "step_results": []}
-            exec_ms = round((time.perf_counter() - t_e0) * 1000, 1)
+            can_async_tap = (
+                async_tap
+                and bool(plan.get("done"))
+                and not verify_final
+                and len(steps) == 1
+                and steps[0].get("op") == "tap"
+            )
+            if can_async_tap:
+                task = asyncio.create_task(self.execute_steps(steps))
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+                exec_res = {"ok": True, "async_dispatched": True, "step_results": []}
+                exec_ms = 0.0
+            else:
+                t_e0 = time.perf_counter()
+                exec_res = await self.execute_steps(steps) if steps else {"ok": True, "step_results": []}
+                exec_ms = round((time.perf_counter() - t_e0) * 1000, 1)
 
             summary = f"step {step_idx}: {plan.get('reason') or steps}"
             if plan.get("matched"):
@@ -777,6 +861,7 @@ class DecisionEngine:
                 return {
                     "ok": True,
                     "goal": goal,
+                    "async_dispatched": can_async_tap,
                     "steps_taken": len(trace),
                     "total_latency_ms": round((time.perf_counter() - t_total0) * 1000, 1),
                     "trace": trace,
@@ -792,7 +877,14 @@ class DecisionEngine:
             "trace": trace,
         }
 
-    async def run_async_voice_task(self, task_id: str, mode: str, payload: Any, original_text: str) -> None:
+    async def run_async_voice_task(
+        self,
+        task_id: str,
+        mode: str,
+        payload: Any,
+        original_text: str,
+        agent: str = "auto",
+    ) -> None:
         # Allow Siri overlay orb to dismiss before dispatching UI actions
         await asyncio.sleep(0.45)
         t0 = time.perf_counter()
@@ -812,15 +904,20 @@ class DecisionEngine:
             return
 
         status = self.get_ai_engine_status()
-        if status["decision_1_configured"] or status["fast_llm_configured"]:
+        eff_agent = (agent or "auto").strip().lower()
+        if eff_agent == "auto" and self.default_agent != "auto":
+            eff_agent = self.default_agent
+        pi_ready = bool((status.get("pi_agent") or {}).get("available"))
+        if status["decision_1_configured"] or status["fast_llm_configured"] or (eff_agent == "pi" and pi_ready):
             try:
-                res = await self.run_ai_goal(original_text, max_steps=6)
+                res = await self.run_ai_goal(original_text, max_steps=6, prefer=eff_agent)
                 self.log_siri_task(
                     {
                         "task_id": task_id,
                         "ts": datetime.now(timezone.utc).isoformat(),
                         "text": original_text,
                         "mode": "async_llm",
+                        "agent": res.get("agent") or eff_agent,
                         "ok": res.get("ok"),
                         "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
                         "result": res,
@@ -834,6 +931,7 @@ class DecisionEngine:
                         "ts": datetime.now(timezone.utc).isoformat(),
                         "text": original_text,
                         "mode": "async_llm",
+                        "agent": eff_agent,
                         "ok": False,
                         "error": str(exc),
                     }
