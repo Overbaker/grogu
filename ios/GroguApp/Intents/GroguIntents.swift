@@ -10,7 +10,7 @@ struct AskGroguIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
-        let reply = await AgentRuntime.shared.runOneShotFromMCP(goal: goal)
+        let reply = await AgentRuntime.shared.runOneShotLocal(goal: goal)
         return .result(value: reply, dialog: IntentDialog(stringLiteral: String(reply.prefix(240))))
     }
 }

@@ -19,6 +19,9 @@ final class MCPServerService {
     private(set) var requestCount = 0
     private(set) var activeSessionIds: Set<String> = []
     private(set) var bearerToken: String
+    private(set) var userStopped = false
+
+    var hasListener: Bool { listener != nil }
 
     var port: UInt16 {
         didSet { UserDefaults.standard.set(Int(port), forKey: Self.portDefaultsKey) }
@@ -54,7 +57,8 @@ final class MCPServerService {
     }
 
     func start() {
-        guard !isRunning else { return }
+        guard listener == nil else { return }
+        userStopped = false
         lastError = nil
         do {
             guard let nwPort = NWEndpoint.Port(rawValue: port) else {
@@ -70,10 +74,9 @@ final class MCPServerService {
                 newListener = try NWListener(using: params, on: nwPort)
             }
 
-            let expectedToken = bearerToken
-            newListener.stateUpdateHandler = { [weak self] state in
+            newListener.stateUpdateHandler = { [weak self, weak newListener] state in
                 Task { @MainActor in
-                    guard let self else { return }
+                    guard let self, let newListener, self.listener === newListener else { return }
                     switch state {
                     case .ready:
                         self.isRunning = true
@@ -81,10 +84,23 @@ final class MCPServerService {
                         let scope = self.allowRemoteAccess ? "0.0.0.0:\(self.port)" : "127.0.0.1:\(self.port)"
                         JetsamGuard.shared.log("MCP Server ready at http://\(scope)/mcp")
                     case .failed(let err):
+                        let wasReady = self.isRunning
+                        newListener.cancel()
+                        self.listener = nil
                         self.isRunning = false
                         self.lastError = err.localizedDescription
                         JetsamGuard.shared.log("MCP Server failed: \(err.localizedDescription)")
+                        if wasReady && !self.userStopped {
+                            self.start()
+                        }
+                    case .waiting(let err):
+                        newListener.cancel()
+                        self.listener = nil
+                        self.isRunning = false
+                        self.lastError = err.localizedDescription
+                        JetsamGuard.shared.log("MCP Server waiting, cancelled: \(err.localizedDescription)")
                     case .cancelled:
+                        self.listener = nil
                         self.isRunning = false
                     default:
                         break
@@ -96,7 +112,7 @@ final class MCPServerService {
                     conn.cancel()
                     return
                 }
-                self.acceptConnection(conn, expectedToken: expectedToken)
+                self.acceptConnection(conn)
             }
             listener = newListener
             newListener.start(queue: queue)
@@ -110,6 +126,7 @@ final class MCPServerService {
         listener?.cancel()
         listener = nil
         isRunning = false
+        userStopped = true
         activeSessionIds.removeAll()
         JetsamGuard.shared.log("MCP Server stopped")
     }
@@ -313,12 +330,12 @@ final class MCPServerService {
 
     // MARK: - Connection Handling (Background Queue)
 
-    nonisolated private func acceptConnection(_ conn: NWConnection, expectedToken: String) {
+    nonisolated private func acceptConnection(_ conn: NWConnection) {
         conn.start(queue: queue)
-        receiveLoop(conn: conn, buffer: Data(), expectedToken: expectedToken)
+        receiveLoop(conn: conn, buffer: Data())
     }
 
-    nonisolated private func receiveLoop(conn: NWConnection, buffer: Data, expectedToken: String) {
+    nonisolated private func receiveLoop(conn: NWConnection, buffer: Data) {
         conn.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
             guard let self else {
                 conn.cancel()
@@ -334,7 +351,7 @@ final class MCPServerService {
             }
             if let parsed = Self.parseHTTP(accumulated) {
                 Task { @MainActor in
-                    await self.routeHTTP(parsed, conn: conn, expectedToken: expectedToken)
+                    await self.routeHTTP(parsed, conn: conn)
                 }
                 return
             }
@@ -342,11 +359,11 @@ final class MCPServerService {
                 conn.cancel()
                 return
             }
-            self.receiveLoop(conn: conn, buffer: accumulated, expectedToken: expectedToken)
+            self.receiveLoop(conn: conn, buffer: accumulated)
         }
     }
 
-    private func routeHTTP(_ req: ParsedHTTP, conn: NWConnection, expectedToken: String) async {
+    private func routeHTTP(_ req: ParsedHTTP, conn: NWConnection) async {
         if req.method == "GET" && req.path == "/health" {
             let mem = MemorySnapshot.current()
             let runnerReady = RunnerLauncher.shared.state == .ready
@@ -354,7 +371,7 @@ final class MCPServerService {
                 "ok": .bool(true),
                 "service": .string("Grogu-iOS-MCP"),
                 "protocol": .string(MCPProtocol.version),
-                "tools": .int(NativeSystemTools.toolSchemas.count + Self.runnerToolSchemas.count + Self.agentMetaToolSchemas.count),
+                "tools": .int(NativeSystemTools.toolSchemas.count + Self.runnerToolSchemas.count + Self.agentMetaToolSchemas.count + SelfManagementTools.remoteSafeToolSchemas.count),
                 "runner_ready": .bool(runnerReady),
                 "phys_footprint_mb": .double(mem.physFootprintMB),
                 "available_mb": .double(mem.availableMB),
@@ -369,7 +386,7 @@ final class MCPServerService {
             return
         }
 
-        guard Self.verifyBearer(req.headers, expected: expectedToken) else {
+        guard Self.verifyBearer(req.headers, expected: bearerToken) else {
             writeHTTP(conn: conn, status: 401, headers: [:], body: Data("{\"error\":\"Unauthorized\"}".utf8))
             return
         }
@@ -437,7 +454,7 @@ final class MCPServerService {
             rpcResponse = MCPJSONRPCResponse(id: rpc.id ?? .int(1), result: .object([:]), error: nil)
 
         case "tools/list":
-            let allTools = NativeSystemTools.toolSchemas + Self.runnerToolSchemas + Self.agentMetaToolSchemas
+            let allTools = NativeSystemTools.toolSchemas + Self.runnerToolSchemas + Self.agentMetaToolSchemas + SelfManagementTools.remoteSafeToolSchemas
             let encodedTools = allTools.map { t in
                 JSONValue.object([
                     "name": .string(t.name),
@@ -517,6 +534,13 @@ final class MCPServerService {
             return await NativeSystemTools.shared.execute(toolName: name, arguments: arguments)
         }
 
+        if SelfManagementTools.localOnlyToolNames.contains(name) {
+            return .error("\(name) is only available to the on-device agent")
+        }
+        if SelfManagementTools.handles(name) {
+            return await SelfManagementTools.execute(toolName: name, arguments: arguments)
+        }
+
         if let runnerMethod = Self.runnerMethodMap[name] {
             do {
                 let res = try await RunnerClient.shared.call(runnerMethod, params: arguments)
@@ -533,7 +557,16 @@ final class MCPServerService {
                 }
                 return .json(res)
             } catch {
-                return .error(error.localizedDescription)
+                var message = error.localizedDescription
+                if let runnerError = error as? RunnerClient.RunnerClientError {
+                    switch runnerError {
+                    case .missingToken, .unreachable, .unauthorized:
+                        message += " Call `runner_wake` to launch GroguRunner."
+                    default:
+                        break
+                    }
+                }
+                return .error(message)
             }
         }
 
@@ -558,8 +591,8 @@ final class MCPServerService {
             return .text(WorkspaceStore.shared.memoryText)
 
         case "grogu_memory_append":
-            let note = arguments.string("note") ?? ""
-            WorkspaceStore.shared.appendMemory(note)
+            let note = (arguments.string("note") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            WorkspaceStore.shared.appendMemory(note.isEmpty ? "" : "[via remote MCP] " + note)
             return .json(["appended": .bool(true)])
 
         case "grogu_skills_list":

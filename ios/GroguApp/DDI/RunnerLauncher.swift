@@ -33,6 +33,10 @@ final class RunnerLauncher {
         JetsamGuard.shared.log("Requested GroguRunner wake via grogu-runner://start")
     }
 
+    func markStopped() {
+        state = .stopped
+    }
+
     func syncTokenOnly() {
         guard let url = URL(string: "grogu-runner://token?callback=grogu://runner-ready") else { return }
         UIApplication.shared.open(url)

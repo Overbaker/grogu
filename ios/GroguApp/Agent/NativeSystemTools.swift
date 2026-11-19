@@ -198,7 +198,12 @@ final class NativeSystemTools: NSObject, CLLocationManagerDelegate {
             case "device_info":
                 resultValue = await getDeviceInfo()
             case "clipboard_get":
-                resultValue = ["text": .string(UIPasteboard.general.string ?? "")]
+                var clip = UIPasteboard.general.string ?? ""
+                let inboundToken = MCPServerService.shared.bearerToken
+                if !inboundToken.isEmpty {
+                    clip = clip.replacingOccurrences(of: inboundToken, with: "<redacted-grogu-mcp-token>")
+                }
+                resultValue = ["text": .string(clip)]
             case "clipboard_set":
                 let text = arguments.string("text") ?? ""
                 UIPasteboard.general.string = text
@@ -522,7 +527,7 @@ final class NativeSystemTools: NSObject, CLLocationManagerDelegate {
         ]
     }
 
-    private static func modelIdentifier() -> String {
+    static func modelIdentifier() -> String {
         var sys = utsname()
         uname(&sys)
         return withUnsafePointer(to: &sys.machine) { ptr in

@@ -2,11 +2,14 @@ import SwiftUI
 
 @main
 struct GroguApp: App {
+    @Environment(\.scenePhase) private var scenePhase
+
     init() {
         _ = JetsamGuard.shared
         _ = WorkspaceStore.shared
         _ = MCPClientHub.shared
         _ = MCPServerService.shared
+        MCPServerService.shared.start()
     }
 
     var body: some Scene {
@@ -17,6 +20,15 @@ struct GroguApp: App {
                 }
                 .task {
                     await RunnerLauncher.shared.refreshHealth()
+                }
+                .onChange(of: scenePhase) { _, newPhase in
+                    guard newPhase == .active else { return }
+                    if !MCPServerService.shared.isRunning && !MCPServerService.shared.userStopped {
+                        MCPServerService.shared.start()
+                    }
+                    Task {
+                        await RunnerLauncher.shared.refreshHealth()
+                    }
                 }
         }
     }

@@ -56,10 +56,20 @@
 	<false/>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
+		<string>grokbot</string>
+		<string>sand-mobile</string>
+		<string>tailscale</string>
+		<string>shortcuts</string>
 		<string>grogu-runner</string>
 		<string>localdevvpn</string>
 		<string>stikdebug</string>
-		<string>shortcuts</string>
+		<string>chatgpt</string>
+		<string>claude</string>
+		<string>googlechrome</string>
+		<string>weixin</string>
+		<string>alipay</string>
+		<string>tg</string>
+		<string>obsidian</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>
