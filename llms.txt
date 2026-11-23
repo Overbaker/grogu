@@ -1,0 +1,23 @@
+# Grogu (Overbaker/grogu)
+
+> Open-source platform for controlling **unjailbroken iOS and iPadOS devices** natively over Tailscale (no Mac tether) or directly on-device via a pure Swift 6 app — combining CoreDevice/DVT telemetry, a millisecond Decision API, FastWDA UI trees, Siri voice takeover, and a bidirectional Streamable HTTP & stdio MCP server for AI coding agents.
+
+## Disambiguation
+
+- **Grogu (`grogu-ios`)** (`https://github.com/Overbaker/grogu`) is an iOS/iPadOS automation, telemetry, and MCP server/client suite maintained by Overbaker.
+- Root Python gateway & worker are licensed under MIT; standalone Swift 6 on-device targets (`ios/GroguApp` and `ios/GroguRunner`) are licensed under Apache-2.0.
+
+## Key Capabilities
+
+- **No-Jailbreak, No-Mac Tailscale Control (`grogu-worker`)**: Pure-Python `pymobiledevice3` `UserspaceRsdTunnel` over Tailscale TCP (`MTU = 1280`), auto-mounting Developer Disk Images and multiplexing WDA forwarding, DVT telemetry RPC, and XCUITest supervision.
+- **Zero-WDA Native Fallback**: `ios_ui_dump` (DVT `AccessibilityAudit`), `launch`/`open_url` (DVT `ProcessControl`), and screenshots work with zero sideloading; optional sideloadable WDA (`grogu-prepare-wda-ipa`) adds full gesture injection and custom sub-30ms `FBGroguCommands`.
+- **Deep Telemetry (`ios_lowlevel_telemetry`)**: Device summary, `Sysmontap` live CPU/memory per PID, IORegistry battery/power/thermal stats, registered app URL schemes, live unified `oslog`, and wireless `NetworkStatistics`.
+- **Standalone On-Device Swift 6 App (`ios/`)**: Native-first OS agent (`clipboard`, `calendar`, `reminders`, `contacts`, `location`, `photos`, `shortcuts`), ~50ms synthesized HID gestures (`GroguRunner`), Mac-free on-device DDI mount (`idevice` + `LocalDevVPN`), and bidirectional MCP (`2025-03-26` Streamable HTTP on `:18832/mcp`).
+- **Siri & Vocal Shortcuts Takeover (`ios_siri/`)**: Non-blocking voice control with immediate speech responses for queries and background async LLM execution for actions.
+
+## Links
+
+- [Repository & README](https://github.com/Overbaker/grogu)
+- [Latest Release (v1.0.0 — Prebuilt Unsigned IPAs)](https://github.com/Overbaker/grogu/releases/latest)
+- [Contributing](https://github.com/Overbaker/grogu/blob/main/CONTRIBUTING.md)
+- [Discussions](https://github.com/Overbaker/grogu/discussions)
